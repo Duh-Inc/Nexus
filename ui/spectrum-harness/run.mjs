@@ -594,11 +594,14 @@ const RENDER_FIXTURES = [
   'scope-wide-peak',
   'scope-wide-average',
   'dss-two-tone',
+  'dss-two-tone-spikes',
 ]
 /** Fixtures checked only backend against backend, with no stored picture (see the loop). */
 const CROSS_ONLY = ['wf-uhf', 'wf-retune-nearest']
 /** A cross-only fixture that must NOT draw what a stored fixture draws: [fixture, the one it varies]. */
 const MUST_DIFFER = { 'wf-retune-nearest': 'wf-retune' }
+/** Stored fixtures that must not draw what another stored fixture draws, on each backend. */
+const STORED_MUST_DIFFER = { 'dss-two-tone-spikes': 'dss-two-tone' }
 const RENDER_BACKENDS = ['webgl2', 'canvas2d']
 const RENDER_BASELINES = join(BASELINES, 'renderer')
 const EXACT = { channel: 0, maxFraction: 0 }
@@ -723,6 +726,28 @@ async function renderChecks(cdp, base, backend) {
     const cmp = comparePixels(again, drawn[`${be}-scope-wide-average`], EXACT)
     record({ kind: 'render', id: `${be} redraw is idempotent`, outcome: cmp.match ? 'pass' : 'fail', detail: cmp.reason || 'identical' })
     line('RENDER', `${be} 30 more draws, no new row`, cmp.match ? 'identical' : cmp.reason, cmp.match ? 'ok' : 'FAIL (a draw leaves something behind)')
+  }
+  // CONTROL: the spike style must not be the ridge style under another name.
+  for (const [fx, other] of Object.entries(STORED_MUST_DIFFER)) {
+    for (const be of RENDER_BACKENDS) {
+      const same = comparePixels(drawn[`${be}-${fx}`], drawn[`${be}-${other}`])
+      const id = `${fx} vs ${other} (${be})`
+      record({ kind: 'render-control', id, outcome: same.match ? 'fail' : 'pass', detail: same.match ? 'identical: the style did not reach the pixels' : pct(same) })
+      line('CONTROL', id, pct(same), same.match ? 'FAIL (no difference)' : 'differs, as it must')
+    }
+  }
+  // The spike style keeps the median when it is on, and drops it when it is off: the same burst is
+  // rejected by one and shown by the other, on each backend, so the switch reaches both.
+  for (const be of RENDER_BACKENDS) {
+    for (const [fx, wantShown] of [['dss-two-tone-spikes', false], ['dss-spikes-raw', true]]) {
+      const clean = await renderFixture2(cdp, base, fx, be, opt.palette, 'steady')
+      const burst = await renderFixture2(cdp, base, fx, be, opt.palette, 'steady-burst')
+      const same = comparePixels(burst, clean, EXACT)
+      const ok = wantShown ? !same.match : same.match
+      const id = `${be} ${fx}: burst ${wantShown ? 'shown (filter off)' : 'rejected (filter on)'}`
+      record({ kind: 'render', id, outcome: ok ? 'pass' : 'fail', detail: same.reason || 'identical' })
+      line('RENDER', id, same.reason || 'identical', ok ? 'ok' : 'FAIL')
+    }
   }
   // The 3-D stack's median of three: with identical rows around it, a one-row broadband burst must
   // leave the stack exactly as it was. The same burst MUST show on the 2-D waterfall, which has no

@@ -22,9 +22,15 @@
 import { GLSL_AGGREGATE, safeDbPerUnit } from './aggregate'
 import { bandsOf, TRACE_STOPS } from './canvas2d'
 import {
+  DSS_GRID_ALPHA,
+  DSS_LOOK_DEFAULT,
   DSS_MAX_GL_COLS,
   DSS_ROWS,
+  dssGridRgb,
+  dssGridSegments,
   GLSL_DSS_DERIVE_FS,
+  GLSL_DSS_GRID_FS,
+  GLSL_DSS_GRID_VS,
   GLSL_DSS_MESH_FS,
   GLSL_DSS_MESH_VS,
   GLSL_FULLSCREEN_VS,
@@ -180,6 +186,10 @@ interface Resources {
   traceStroke: Program
   dssDerive: Program
   dssMesh: Program
+  dssGrid: Program
+  /** The grid's vertex buffer and VAO, filled on demand. */
+  dssGridVao: WebGLVertexArrayObject
+  dssGridBuf: WebGLBuffer
   ring: WebGLTexture
   ringCols: number
   meta: WebGLTexture
@@ -239,8 +249,9 @@ function texture(gl: WebGL2RenderingContext, unit: number, format: number, w: nu
 
 const WATERFALL_UNIFORMS = ['uRing', 'uMeta', 'uLut', 'uH', 'uTop', 'uBandH', 'uW', 'uViewLo', 'uViewHi', 'uHead', 'uCount', 'uDepth', 'uOffset', 'uNewestAtTop', 'uDetector', 'uInterp']
 const TRACE_UNIFORMS = ['uTrace', 'uLut', 'uN', 'uRowLo', 'uRowHi', 'uViewSpan', 'uW', 'uH', 'uTraceH', 'uRange', 'uDetector', 'uDbPerUnit', 'uLineWidth', 'uInterp']
-const DERIVE_UNIFORMS = ['uRing', 'uMeta', 'uHead', 'uCount', 'uDepth', 'uOffset', 'uCols', 'uDetector', 'uViewLo', 'uViewHi', 'uInterp']
-const MESH_UNIFORMS = ['uField', 'uLut', 'uCols', 'uRows', 'uW', 'uH', 'uPlotH']
+const DERIVE_UNIFORMS = ['uRing', 'uMeta', 'uHead', 'uCount', 'uDepth', 'uOffset', 'uCols', 'uDetector', 'uViewLo', 'uViewHi', 'uInterp', 'uMedian']
+const MESH_UNIFORMS = ['uField', 'uLut', 'uCols', 'uRows', 'uW', 'uH', 'uPlotH', 'uStyle']
+const GRID_UNIFORMS = ['uW', 'uH', 'uTop', 'uColor']
 
 export class WebGl2Backend implements Backend {
   readonly kind = 'webgl2'
@@ -306,10 +317,24 @@ export class WebGl2Backend implements Backend {
       traceStroke: compile(gl, TRACE_STROKE_VS, TRACE_STROKE_FS, TRACE_UNIFORMS),
       dssDerive: compile(gl, GLSL_FULLSCREEN_VS, GLSL_DSS_DERIVE_FS, DERIVE_UNIFORMS),
       dssMesh: compile(gl, GLSL_DSS_MESH_VS, GLSL_DSS_MESH_FS, MESH_UNIFORMS),
+      dssGrid: compile(gl, GLSL_DSS_GRID_VS, GLSL_DSS_GRID_FS, GRID_UNIFORMS),
     }
     for (const [name, p] of Object.entries(programs)) if (typeof p === 'string') return `${name} ${p}`
     const vao = gl.createVertexArray()
     if (!vao) return 'createVertexArray returned null'
+    const dssGridVao = gl.createVertexArray()
+    const dssGridBuf = gl.createBuffer()
+    if (!dssGridVao || !dssGridBuf) return 'the grid buffer could not be created'
+    {
+      const grid = programs.dssGrid as Program
+      gl.bindVertexArray(dssGridVao)
+      gl.bindBuffer(gl.ARRAY_BUFFER, dssGridBuf)
+      const at = gl.getAttribLocation(grid.program, 'aPos')
+      gl.enableVertexAttribArray(at)
+      gl.vertexAttribPointer(at, 2, gl.FLOAT, false, 0, 0)
+      gl.bindVertexArray(null)
+      gl.bindBuffer(gl.ARRAY_BUFFER, null)
+    }
     const res: Resources = {
       vao,
       waterfall: programs.waterfall as Program,
@@ -317,6 +342,9 @@ export class WebGl2Backend implements Backend {
       traceStroke: programs.traceStroke as Program,
       dssDerive: programs.dssDerive as Program,
       dssMesh: programs.dssMesh as Program,
+      dssGrid: programs.dssGrid as Program,
+      dssGridVao,
+      dssGridBuf,
       ring: texture(gl, U_RING, gl.R16F, this.ring.cols, this.ring.depth),
       ringCols: this.ring.cols,
       meta: texture(gl, U_META, gl.RGBA32F, 2, this.ring.depth),
@@ -413,7 +441,9 @@ export class WebGl2Backend implements Backend {
     const res = this.res
     this.res = null
     if (res && !gl.isContextLost()) {
-      for (const p of [res.waterfall, res.traceFill, res.traceStroke, res.dssDerive, res.dssMesh]) gl.deleteProgram(p.program)
+      for (const p of [res.waterfall, res.traceFill, res.traceStroke, res.dssDerive, res.dssMesh, res.dssGrid]) gl.deleteProgram(p.program)
+      gl.deleteBuffer(res.dssGridBuf)
+      gl.deleteVertexArray(res.dssGridVao)
       for (const t of [res.ring, res.meta, res.lut, res.trace]) gl.deleteTexture(t)
       if (res.dss) {
         gl.deleteFramebuffer(res.dss.fbo)
@@ -524,6 +554,8 @@ export class WebGl2Backend implements Backend {
     gl.uniform1i(d.u.uCols, cols)
     gl.uniform1i(d.u.uDetector, scene.detector === 'average' ? 1 : 0)
     gl.uniform1i(d.u.uInterp, scene.interpolation === 'nearest' ? 1 : 0)
+    const look = scene.dssLook ?? DSS_LOOK_DEFAULT
+    gl.uniform1i(d.u.uMedian, look.impulse ? 1 : 0)
     gl.uniform1f(d.u.uViewLo, scene.view.loHz - this.origin)
     gl.uniform1f(d.u.uViewHi, scene.view.hiHz - this.origin)
     gl.drawArrays(gl.TRIANGLES, 0, 3)
@@ -534,10 +566,28 @@ export class WebGl2Backend implements Backend {
     gl.scissor(0, this.h - plotH, this.w, plotH)
     gl.enable(gl.BLEND)
     gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
+    if (look.style === 'spikes') {
+      // The room first, so every spike stands in front of its walls (the canvas path's order).
+      const seg = new Float32Array(dssGridSegments(this.w, plotH))
+      const g = res.dssGrid
+      const [r, gg, b] = dssGridRgb(this.lutUploaded ?? scene.lut)
+      gl.useProgram(g.program)
+      gl.uniform1f(g.u.uW, this.w)
+      gl.uniform1f(g.u.uH, this.h)
+      gl.uniform1f(g.u.uTop, 0)
+      gl.uniform4f(g.u.uColor, r / 255, gg / 255, b / 255, DSS_GRID_ALPHA)
+      gl.bindVertexArray(res.dssGridVao)
+      gl.bindBuffer(gl.ARRAY_BUFFER, res.dssGridBuf)
+      gl.bufferData(gl.ARRAY_BUFFER, seg, gl.DYNAMIC_DRAW)
+      gl.drawArrays(gl.LINES, 0, seg.length / 2)
+      gl.bindBuffer(gl.ARRAY_BUFFER, null)
+      gl.bindVertexArray(res.vao)
+    }
     gl.activeTexture(gl.TEXTURE0 + U_DSS)
     gl.bindTexture(gl.TEXTURE_2D, res.dss.tex)
     const m = res.dssMesh
     gl.useProgram(m.program)
+    gl.uniform1i(m.u.uStyle, look.style === 'spikes' ? 1 : 0)
     gl.uniform1i(m.u.uCols, cols)
     gl.uniform1i(m.u.uRows, rows)
     gl.uniform1f(m.u.uW, this.w)

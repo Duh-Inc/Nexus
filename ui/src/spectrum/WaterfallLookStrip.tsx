@@ -10,14 +10,20 @@ import { t } from '../i18n'
 import type { ScopeWindow } from '../api'
 import type { Interpolation } from './types'
 import {
+  DETAILS_3D,
   EDGES,
+  ON_OFF,
+  STYLES_3D,
   LOOK_DEFAULTS,
   LOOK_RIG,
   RESOLUTIONS,
   SMOOTHINGS,
   SPEEDS,
   sameLook,
+  type Wf3dDetail,
+  type Wf3dStyle,
   type WaterfallLook,
+  type WfOnOff,
   type WfSmoothing,
   type WfSpeed,
 } from './waterfallLook'
@@ -74,10 +80,28 @@ function speedLabel(v: WfSpeed): string {
   }
 }
 
+function style3dLabel(v: Wf3dStyle): string {
+  return v === 'ridge' ? t('waterfall.look.threeD.style.ridge') : t('waterfall.look.threeD.style.spikes')
+}
+function style3dTitle(v: Wf3dStyle): string {
+  return v === 'ridge' ? t('waterfall.look.threeD.style.ridge.title') : t('waterfall.look.threeD.style.spikes.title')
+}
+function impulseLabel(v: WfOnOff): string {
+  return v === 'on' ? t('waterfall.look.threeD.impulse.on') : t('waterfall.look.threeD.impulse.off')
+}
+function detailLabel(v: Wf3dDetail): string {
+  return v === 'fixed' ? t('waterfall.look.threeD.detail.fixed') : t('waterfall.look.threeD.detail.pixel')
+}
+function detailTitle(v: Wf3dDetail): string {
+  return v === 'fixed' ? t('waterfall.look.threeD.detail.fixed.title') : t('waterfall.look.threeD.detail.pixel.title')
+}
+
 interface Props {
   id: string
   look: WaterfallLook
   onChange: (patch: Partial<WaterfallLook>) => void
+  /** The 3-D view is on: offer its three settings too. Hidden in 2D, where they change nothing. */
+  threeD?: boolean
 }
 
 function Chips<T extends string>({
@@ -113,7 +137,7 @@ function Chips<T extends string>({
   )
 }
 
-export function WaterfallLookStrip({ id, look, onChange }: Props) {
+export function WaterfallLookStrip({ id, look, onChange, threeD }: Props) {
   const isRig = sameLook(look, LOOK_RIG)
   const isDefault = sameLook(look, LOOK_DEFAULTS)
   return (
@@ -150,6 +174,34 @@ export function WaterfallLookStrip({ id, look, onChange }: Props) {
         title={() => t('waterfall.look.speed.title')}
         onPick={(speed) => onChange({ speed })}
       />
+      {threeD && (
+        <>
+          <Chips
+            aria={t('waterfall.look.threeD.style.aria')}
+            values={STYLES_3D}
+            current={look.style3d}
+            label={style3dLabel}
+            title={style3dTitle}
+            onPick={(style3d) => onChange({ style3d })}
+          />
+          <Chips
+            aria={t('waterfall.look.threeD.impulse.aria')}
+            values={ON_OFF}
+            current={look.impulse3d}
+            label={impulseLabel}
+            title={() => t('waterfall.look.threeD.impulse.title')}
+            onPick={(impulse3d) => onChange({ impulse3d })}
+          />
+          <Chips
+            aria={t('waterfall.look.threeD.detail.aria')}
+            values={DETAILS_3D}
+            current={look.detail3d}
+            label={detailLabel}
+            title={detailTitle}
+            onPick={(detail3d) => onChange({ detail3d })}
+          />
+        </>
+      )}
       <span role="group" aria-label={t('waterfall.look.preset.aria')}>
         <button
           type="button"

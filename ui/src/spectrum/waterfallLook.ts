@@ -14,6 +14,13 @@
 //               `Interpolation`): blended between bin centres, or held flat to its edges.
 //   speed       the row cadence, relative to the surface's own (`rowMs`).
 //
+// and three for the 3-D stack (dss.ts `DssLook`), shown only while the 3-D view is on:
+//
+//   style3d     ridge (AetherSDR's filled surface) or spikes (a Yaesu rig's 3DSS: thin spikes
+//               coloured by height in a perspective grid).
+//   impulse3d   the median-of-3 over time that rejects one-row bursts, on or off.
+//   detail3d    canvas-2D's columns: fixed (256) or one per pixel. WebGL2 is per pixel already.
+//
 // RIG is the four that together give a rig scope's look: one FFT per row, the narrow lobe, hard
 // bin edges and a faster sweep. It is a preset, not a mode: it writes the four values and the
 // operator can move any of them afterwards.
@@ -26,16 +33,22 @@
 // every value here.
 
 import type { ScopeWindow } from '../api'
-import type { Interpolation } from './types'
+import type { DssLook, Interpolation } from './types'
 
 export type WfSmoothing = 'average' | 'peak' | 'live'
 export type WfSpeed = 'slow' | 'normal' | 'fast'
+export type Wf3dStyle = DssLook['style']
+export type WfOnOff = 'on' | 'off'
+export type Wf3dDetail = DssLook['detail']
 
 export interface WaterfallLook {
   resolution: ScopeWindow
   smoothing: WfSmoothing
   edges: Interpolation
   speed: WfSpeed
+  style3d: Wf3dStyle
+  impulse3d: WfOnOff
+  detail3d: Wf3dDetail
 }
 
 /** The shipped picture. A look equal to this sends nothing new to the backend and draws exactly
@@ -45,6 +58,9 @@ export const LOOK_DEFAULTS: Readonly<WaterfallLook> = Object.freeze({
   smoothing: 'average',
   edges: 'linear',
   speed: 'normal',
+  style3d: 'ridge',
+  impulse3d: 'on',
+  detail3d: 'fixed',
 })
 
 /** The rig-scope preset (see the header). */
@@ -53,12 +69,18 @@ export const LOOK_RIG: Readonly<WaterfallLook> = Object.freeze({
   smoothing: 'live',
   edges: 'nearest',
   speed: 'fast',
+  style3d: 'spikes',
+  impulse3d: 'off',
+  detail3d: 'pixel',
 })
 
 export const RESOLUTIONS: readonly ScopeWindow[] = ['fast', 'balanced', 'sharp']
 export const SMOOTHINGS: readonly WfSmoothing[] = ['average', 'peak', 'live']
 export const EDGES: readonly Interpolation[] = ['linear', 'nearest']
 export const SPEEDS: readonly WfSpeed[] = ['slow', 'normal', 'fast']
+export const STYLES_3D: readonly Wf3dStyle[] = ['ridge', 'spikes']
+export const ON_OFF: readonly WfOnOff[] = ['on', 'off']
+export const DETAILS_3D: readonly Wf3dDetail[] = ['fixed', 'pixel']
 
 export const LOOK_KEY = 'nexus.waterfall.look'
 
@@ -79,6 +101,9 @@ export function clampLook(raw: unknown): WaterfallLook {
     smoothing: pick(o.smoothing, SMOOTHINGS, LOOK_DEFAULTS.smoothing),
     edges: pick(o.edges, EDGES, LOOK_DEFAULTS.edges),
     speed: pick(o.speed, SPEEDS, LOOK_DEFAULTS.speed),
+    style3d: pick(o.style3d, STYLES_3D, LOOK_DEFAULTS.style3d),
+    impulse3d: pick(o.impulse3d, ON_OFF, LOOK_DEFAULTS.impulse3d),
+    detail3d: pick(o.detail3d, DETAILS_3D, LOOK_DEFAULTS.detail3d),
   }
 }
 
@@ -100,7 +125,12 @@ export function saveLook(look: WaterfallLook): void {
 }
 
 export function sameLook(a: WaterfallLook, b: WaterfallLook): boolean {
-  return a.resolution === b.resolution && a.smoothing === b.smoothing && a.edges === b.edges && a.speed === b.speed
+  return (Object.keys(LOOK_DEFAULTS) as (keyof WaterfallLook)[]).every((k) => a[k] === b[k])
+}
+
+/** The 3-D half of a look, as the renderer takes it. */
+export function dssLookOf(look: WaterfallLook): DssLook {
+  return { style: look.style3d, impulse: look.impulse3d === 'on', detail: look.detail3d }
 }
 
 /** The row period at `speed`, from the surface's own `rowMs`. `normal` is `rowMs` itself, so a

@@ -46,6 +46,7 @@ import { WaterfallLookStrip } from '../spectrum/WaterfallLookStrip'
 import {
   LOOK_DEFAULTS,
   LOOK_KEY,
+  dssLookOf,
   loadLook,
   rowMsAt,
   sameLook,
@@ -105,6 +106,12 @@ const THREED_KEY = 'nexus.waterfall.dss'
  *  Per-surface for the same reason as the zoom and the 3D toggle: a torn-off waterfall on a
  *  second monitor may legitimately run the other way from the docked one. */
 const FLOW_KEY = 'nexus.waterfall.flow'
+/** A look change that redraws rows already held: the edges, and the whole 3-D look. The rest change
+ *  what the NEXT rows are, and history keeps the rows it was given. */
+function redrawsHistory(a: WaterfallLook, b: WaterfallLook): boolean {
+  return a.edges !== b.edges || a.style3d !== b.style3d || a.impulse3d !== b.impulse3d || a.detail3d !== b.detail3d
+}
+
 /** Load a persisted [-1,1] slider value (gain/zero); missing/blocked → 0 (= auto). */
 function loadKnob(key: string): number {
   try {
@@ -592,7 +599,7 @@ export function Waterfall({
   const setLook = (patch: Partial<WaterfallLook>) => {
     const next = { ...lookRef.current, ...patch }
     if (sameLook(next, lookRef.current)) return
-    const redraw = next.edges !== lookRef.current.edges
+    const redraw = redrawsHistory(next, lookRef.current)
     lookRef.current = next
     setLookState(next)
     saveLook(next)
@@ -607,7 +614,7 @@ export function Waterfall({
       if (e.key !== LOOK_KEY) return
       const next = loadLook()
       if (sameLook(next, lookRef.current)) return
-      const redraw = next.edges !== lookRef.current.edges
+      const redraw = redrawsHistory(next, lookRef.current)
       lookRef.current = next
       setLookState(next)
       if (redraw) rebuildRef.current?.()
@@ -806,6 +813,7 @@ export function Waterfall({
       // …and a pixel narrower than a bin is filled as the ⚙ strip's EDGES say (linear = shipped).
       interpolation: lookRef.current.edges,
       mode: dssRef.current ? 'dss' : '2d',
+      dssLook: dssLookOf(lookRef.current),
       offsetRows: offsetRef.current,
       newestAtTop: newestAtTopRef.current,
       trace: null,
@@ -1567,7 +1575,7 @@ export function Waterfall({
             buttons — the ✕ is in the same place on every removable pane in the app. */}
         <PaneCloseButton title={paneTitle ?? ''} onRemove={onRemove} hideNote={hideNote} />
       </div>
-      {gear && <WaterfallLookStrip id={gearId} look={look} onChange={setLook} />}
+      {gear && <WaterfallLookStrip id={gearId} look={look} onChange={setLook} threeD={dss} />}
       {/* A display well (styles.css DISPLAY WELLS): the floor is the palette's and dark already;
           the well is what the axis strip, the markers, the legend and the held badge are
           painted in, so they read the same on it in either theme. */}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DSS_ROWS, dssStrengths, median3 } from './dss'
+import { DSS_ROWS, dssGridSegments, dssStrengths, median3 } from './dss'
 import { SpectrumRing } from './ring'
 
 const COLS = 8
@@ -11,10 +11,10 @@ function push(ring: SpectrumRing, bins: number[], loHz = 0, hiHz = 6400): void {
   ring.push({ seq: ring.serial, tMs: ring.serial, loHz, hiHz, bins, dbPerUnit: 120 }, RANGE)
 }
 
-function field(ring: SpectrumRing, offset = 0, view = { loHz: 0, hiHz: 6400 }) {
+function field(ring: SpectrumRing, offset = 0, view = { loHz: 0, hiHz: 6400 }, impulse = true) {
   const out = new Float32Array(DSS_ROWS * COLS)
   const present = new Uint8Array(DSS_ROWS)
-  const rows = dssStrengths(ring, COLS, view, offset, 'peak', out, present)
+  const rows = dssStrengths(ring, COLS, view, offset, 'peak', out, present, undefined, impulse)
   return { rows, at: (r: number) => Array.from(out.subarray(r * COLS, (r + 1) * COLS)), present }
 }
 
@@ -45,6 +45,45 @@ describe('the 3-D stack', () => {
     expect(f.at(2)).toEqual(f.at(0))
     expect(f.at(2)[2]).toBe(1)
     expect(f.at(2)[5]).toBe(0)
+  })
+
+  it('shows the burst as it came when the burst filter is off', () => {
+    const ring = new SpectrumRing(16, 64)
+    const carrier = FLOOR_ROW.slice()
+    carrier[20] = 0.75
+    const burst = new Array(64).fill(0.75)
+    for (const row of [carrier, carrier, burst, carrier, carrier]) push(ring, row)
+    const raw = field(ring, 0, undefined, false)
+    expect(raw.at(2)).toEqual(new Array(COLS).fill(1))
+    // The control: the same ring with the filter on rejects it (the test above), so the flag is
+    // what made the difference.
+    expect(field(ring).at(2)[5]).toBe(0)
+  })
+
+  it('reuses its scratch across calls of different widths without carrying rows over', () => {
+    const ring = new SpectrumRing(16, 64)
+    push(ring, new Array(64).fill(0.75))
+    const wide = new Float32Array(DSS_ROWS * 32)
+    dssStrengths(ring, 32, { loHz: 0, hiHz: 6400 }, 0, 'peak', wide, new Uint8Array(DSS_ROWS))
+    const empty = new SpectrumRing(16, 64)
+    const f = field(empty)
+    expect(f.rows).toBe(0)
+    expect(Array.from(f.present).every((p) => p === 0)).toBe(true)
+  })
+
+  it("puts the spike style's grid inside the plot, with the floor's back edge across it", () => {
+    const seg = dssGridSegments(320, 192)
+    expect(seg.length % 4).toBe(0)
+    for (let i = 0; i < seg.length; i += 2) {
+      expect(seg[i]).toBeGreaterThanOrEqual(0)
+      expect(seg[i]).toBeLessThanOrEqual(320)
+      expect(seg[i + 1]).toBeGreaterThanOrEqual(0)
+      expect(seg[i + 1]).toBeLessThanOrEqual(192)
+    }
+    // The first segment is the floor's back edge: horizontal, above the plot's bottom, narrower than it.
+    expect(seg[1]).toBe(seg[3])
+    expect(seg[1]).toBeLessThan(192)
+    expect(seg[2] - seg[0]).toBeLessThan(320)
   })
 
   it('takes the median at one FREQUENCY across a retune, not at one column', () => {

@@ -70,4 +70,15 @@ describe('the waterfall ⚙ strip', () => {
     })
     expect(screen.getByRole('button', { name: t('waterfall.look.preset.rig') }).getAttribute('aria-pressed')).toBe('true')
   })
+
+  it('offers the three 3-D settings only while the 3-D view is on', () => {
+    render(wf())
+    fireEvent.click(gear())
+    const style = () => screen.queryByRole('group', { name: t('waterfall.look.threeD.style.aria') })
+    expect(style()).toBeNull()
+    fireEvent.click(screen.getByTitle(t('waterfall.dss.off.title')))
+    expect(style()).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: t('waterfall.look.threeD.style.spikes') }))
+    expect(loadLook()).toEqual({ ...LOOK_DEFAULTS, style3d: 'spikes' })
+  })
 })

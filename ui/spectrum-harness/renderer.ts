@@ -29,6 +29,8 @@ interface Fixture {
   detector: 'peak' | 'average'
   /** How a bin wider than a pixel is filled; absent = `linear`, the shipped fill. */
   interpolation?: 'linear' | 'nearest'
+  /** The 3-D look; absent = the shipped ridge surface. */
+  dssLook?: { style: 'ridge' | 'spikes'; impulse: boolean; detail: 'fixed' | 'pixel' }
   view?: [number, number]
   newestAtTop?: boolean
   offsetRows?: number
@@ -54,6 +56,12 @@ export const FIXTURES: Record<string, Fixture> = {
   'scope-wide-peak': { set: 'wide', w: 320, h: 192, traceH: 86, stripH: 0, mode: '2d', detector: 'peak' },
   'scope-wide-average': { set: 'wide', w: 320, h: 192, traceH: 86, stripH: 0, mode: '2d', detector: 'average' },
   'dss-two-tone': { set: 'two-tone', w: 320, h: 192, traceH: 0, stripH: 0, mode: 'dss', detector: 'peak' },
+  // The ⚙ strip's Yaesu-style 3-D: spikes coloured by height in a grid, a column per pixel. Stored
+  // per backend, and each must differ from its own ridge picture (run.mjs).
+  'dss-two-tone-spikes': { set: 'two-tone', w: 320, h: 192, traceH: 0, stripH: 0, mode: 'dss', detector: 'peak', dssLook: { style: 'spikes', impulse: true, detail: 'pixel' } },
+  // The same with the burst filter off: run.mjs feeds it the one-row burst, which must SHOW here
+  // (and not with the filter on), on both backends.
+  'dss-spikes-raw': { set: 'two-tone', w: 320, h: 192, traceH: 0, stripH: 0, mode: 'dss', detector: 'peak', dssLook: { style: 'spikes', impulse: false, detail: 'pixel' } },
   // Zoomed inside a 23 cm scope's span after the history began on audio: WebGL2's float32 hertz
   // stay exact only because it re-bases on the newest rows. No stored picture: canvas-2D, which
   // works in float64 throughout, is the reference.
@@ -85,6 +93,7 @@ function sceneFor(fx: Fixture, lut: Uint8ClampedArray, last: Frame | null, seq: 
     detector: fx.detector,
     interpolation: fx.interpolation,
     mode: fx.mode,
+    dssLook: fx.dssLook,
     offsetRows: fx.offsetRows ?? 0,
     newestAtTop: fx.newestAtTop ?? false,
     trace: last && fx.traceH > 0 ? { frame: toFrame(last, seq), range: RANGE } : null,

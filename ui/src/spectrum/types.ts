@@ -76,6 +76,20 @@ export interface SpectrumLayout {
 
 export type SpectrumMode = '2d' | 'dss'
 
+/** The 3-D stack's look (dss.ts), all three independent. `DSS_LOOK_DEFAULT` is the shipped one.
+ *
+ *  - `style`: `ridge`, AetherSDR's filled, shaded surface; or `spikes`, a Yaesu-style forest of
+ *    thin spikes coloured by height inside a perspective grid.
+ *  - `impulse`: the median-of-3 over time that keeps a one-row burst from throwing up a wall. It
+ *    also files the corners off a short signal, so a sharp picture may want it off.
+ *  - `detail`: canvas-2D's column count, `fixed` (256, the shipped cost) or `pixel` (one per device
+ *    pixel). WebGL2 always draws one per pixel, so it does not read this. */
+export interface DssLook {
+  style: 'ridge' | 'spikes'
+  impulse: boolean
+  detail: 'fixed' | 'pixel'
+}
+
 /** Everything one `draw` paints from, besides the committed rows. */
 export interface SpectrumScene {
   /** The frequency window across the canvas width, in the frames' Hz. */
@@ -89,6 +103,8 @@ export interface SpectrumScene {
    *  host that does not offer the control draws exactly what it drew before. */
   interpolation?: Interpolation
   mode: SpectrumMode
+  /** The 3-D stack's look; absent = `DSS_LOOK_DEFAULT`, the shipped surface. */
+  dssLook?: DssLook
   /** Scrollback: the age of the newest visible row, 0 = live. A paused host advances it by one
    *  per committed row to hold the picture still. */
   offsetRows: number
