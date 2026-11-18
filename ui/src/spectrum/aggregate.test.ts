@@ -79,6 +79,50 @@ describe('aggregateRow', () => {
     expect(peak[3]).toBeLessThan(0.6)
   })
 
+  it('holds each bin flat to its own edges under nearest, where linear blends them', () => {
+    const row = [0.2, 0.6]
+    const lin = new Float32Array(8)
+    const near = new Float32Array(8)
+    aggregateRow(row, 0, 2, 0, 2, 0, 2, lin, 'peak', 120, 'linear')
+    aggregateRow(row, 0, 2, 0, 2, 0, 2, near, 'peak', 120, 'nearest')
+    expect(Array.from(near)).toEqual([0.2, 0.2, 0.2, 0.2, 0.6, 0.6, 0.6, 0.6].map(Math.fround))
+    // The control: the same row under linear has a pixel strictly between the two bins, so the
+    // option is what made the difference.
+    expect(lin.some((v) => v > 0.2 + 1e-6 && v < 0.6 - 1e-6)).toBe(true)
+  })
+
+  it('defaults to linear, so a caller that never names a fill draws what it always drew', () => {
+    const r = prng(3)
+    const row = Array.from({ length: 64 }, () => r())
+    const a = new Float32Array(500)
+    const b = new Float32Array(500)
+    aggregateRow(row, 0, 64, 0, 64, 10, 30, a, 'peak', 120)
+    aggregateRow(row, 0, 64, 0, 64, 10, 30, b, 'peak', 120, 'linear')
+    expect(Array.from(a)).toEqual(Array.from(b))
+  })
+
+  it('leaves the decimating regime to the detector, whatever the fill', () => {
+    const r = prng(5)
+    const row = Array.from({ length: 2048 }, () => r())
+    for (const d of ['peak', 'average'] as const) {
+      const a = new Float32Array(300)
+      const b = new Float32Array(300)
+      aggregateRow(row, 0, 2048, 0, 1, 0, 1, a, d, 120, 'linear')
+      aggregateRow(row, 0, 2048, 0, 1, 0, 1, b, d, 120, 'nearest')
+      expect(Array.from(b)).toEqual(Array.from(a))
+    }
+  })
+
+  it('agrees with linear at one pixel per bin, where both read the bin centre', () => {
+    const r = prng(9)
+    const row = Array.from({ length: 128 }, () => r())
+    const a = new Float32Array(128)
+    const b = new Float32Array(128)
+    aggregateRow(row, 0, 128, 0, 128, 0, 128, a, 'peak', 120, 'linear')
+    aggregateRow(row, 0, 128, 0, 128, 0, 128, b, 'peak', 120, 'nearest')
+    expect(Array.from(b)).toEqual(Array.from(a))
+  })
+
   it('marks a pixel outside the row NaN, under either detector', () => {
     for (const d of ['peak', 'average'] as const) {
       const out = new Float32Array(4)

@@ -52,6 +52,7 @@ uniform int uDepth;
 uniform int uOffset;
 uniform int uNewestAtTop;
 uniform int uDetector;
+uniform int uInterp;
 out vec4 outColor;
 ${GLSL_AGGREGATE}
 void main() {
@@ -70,7 +71,7 @@ void main() {
   vec4 m1 = texelFetch(uMeta, ivec2(1, r), 0);
   float v;
   if (!aggregateRow(uRing, r, int(m0.z), m0.x, m0.y, uViewLo, (uViewHi - uViewLo) / uW,
-                    floor(gl_FragCoord.x), uDetector, m0.w, v)) {
+                    floor(gl_FragCoord.x), uDetector, m0.w, uInterp, v)) {
     outColor = floorColor;
     return;
   }
@@ -90,12 +91,13 @@ uniform float uH;
 uniform float uTraceH;
 uniform vec2 uRange;
 uniform int uDetector;
+uniform int uInterp;
 uniform float uDbPerUnit;
 ${GLSL_AGGREGATE}
 float traceY(float x) {
   float v;
   float t = 0.0;
-  if (x < uW && aggregateRow(uTrace, 0, uN, uRowLo, uRowHi, 0.0, uViewSpan / uW, x, uDetector, uDbPerUnit, v)) {
+  if (x < uW && aggregateRow(uTrace, 0, uN, uRowLo, uRowHi, 0.0, uViewSpan / uW, x, uDetector, uDbPerUnit, uInterp, v)) {
     t = strengthIn(v, uRange.x, uRange.y);
   }
   return uTraceH - t * (uTraceH - 1.0);
@@ -235,9 +237,9 @@ function texture(gl: WebGL2RenderingContext, unit: number, format: number, w: nu
   return t
 }
 
-const WATERFALL_UNIFORMS = ['uRing', 'uMeta', 'uLut', 'uH', 'uTop', 'uBandH', 'uW', 'uViewLo', 'uViewHi', 'uHead', 'uCount', 'uDepth', 'uOffset', 'uNewestAtTop', 'uDetector']
-const TRACE_UNIFORMS = ['uTrace', 'uLut', 'uN', 'uRowLo', 'uRowHi', 'uViewSpan', 'uW', 'uH', 'uTraceH', 'uRange', 'uDetector', 'uDbPerUnit', 'uLineWidth']
-const DERIVE_UNIFORMS = ['uRing', 'uMeta', 'uHead', 'uCount', 'uDepth', 'uOffset', 'uCols', 'uDetector', 'uViewLo', 'uViewHi']
+const WATERFALL_UNIFORMS = ['uRing', 'uMeta', 'uLut', 'uH', 'uTop', 'uBandH', 'uW', 'uViewLo', 'uViewHi', 'uHead', 'uCount', 'uDepth', 'uOffset', 'uNewestAtTop', 'uDetector', 'uInterp']
+const TRACE_UNIFORMS = ['uTrace', 'uLut', 'uN', 'uRowLo', 'uRowHi', 'uViewSpan', 'uW', 'uH', 'uTraceH', 'uRange', 'uDetector', 'uDbPerUnit', 'uLineWidth', 'uInterp']
+const DERIVE_UNIFORMS = ['uRing', 'uMeta', 'uHead', 'uCount', 'uDepth', 'uOffset', 'uCols', 'uDetector', 'uViewLo', 'uViewHi', 'uInterp']
 const MESH_UNIFORMS = ['uField', 'uLut', 'uCols', 'uRows', 'uW', 'uH', 'uPlotH']
 
 export class WebGl2Backend implements Backend {
@@ -443,6 +445,7 @@ export class WebGl2Backend implements Backend {
     gl.uniform1i(p.u.uOffset, Math.max(0, Math.floor(scene.offsetRows)))
     gl.uniform1i(p.u.uNewestAtTop, scene.newestAtTop ? 1 : 0)
     gl.uniform1i(p.u.uDetector, scene.detector === 'average' ? 1 : 0)
+    gl.uniform1i(p.u.uInterp, scene.interpolation === 'nearest' ? 1 : 0)
     gl.drawArrays(gl.TRIANGLES, 0, 3)
   }
 
@@ -480,6 +483,7 @@ export class WebGl2Backend implements Backend {
       gl.uniform1f(p.u.uTraceH, traceH)
       gl.uniform2f(p.u.uRange, range.floor, range.ceil)
       gl.uniform1i(p.u.uDetector, scene.detector === 'average' ? 1 : 0)
+      gl.uniform1i(p.u.uInterp, scene.interpolation === 'nearest' ? 1 : 0)
       gl.uniform1f(p.u.uDbPerUnit, safeDbPerUnit(frame.dbPerUnit))
       gl.uniform1f(p.u.uLineWidth, Math.max(1, scene.layout.lineWidth))
     }
@@ -519,6 +523,7 @@ export class WebGl2Backend implements Backend {
     gl.uniform1i(d.u.uOffset, offset)
     gl.uniform1i(d.u.uCols, cols)
     gl.uniform1i(d.u.uDetector, scene.detector === 'average' ? 1 : 0)
+    gl.uniform1i(d.u.uInterp, scene.interpolation === 'nearest' ? 1 : 0)
     gl.uniform1f(d.u.uViewLo, scene.view.loHz - this.origin)
     gl.uniform1f(d.u.uViewHi, scene.view.hiHz - this.origin)
     gl.drawArrays(gl.TRIANGLES, 0, 3)
@@ -680,6 +685,7 @@ export class WebGl2Backend implements Backend {
       gl.uniform1i(p.u.uOffset, 0)
       gl.uniform1i(p.u.uNewestAtTop, 0)
       gl.uniform1i(p.u.uDetector, 0)
+      gl.uniform1i(p.u.uInterp, 0)
       gl.drawArrays(gl.TRIANGLES, 0, 3)
       gl.readPixels(0, 0, 4, 2, gl.RGBA, gl.UNSIGNED_BYTE, out)
       // GL row 0 is the bottom: the newest row (ring row 1); row 1 the one before it.
@@ -769,6 +775,7 @@ export class WebGl2Backend implements Backend {
         gl.uniform1i(p.u.uOffset, 0)
         gl.uniform1i(p.u.uNewestAtTop, 0)
         gl.uniform1i(p.u.uDetector, 0)
+        gl.uniform1i(p.u.uInterp, 0)
         gl.drawArrays(gl.TRIANGLES, 0, 3)
       },
       settle: () => {

@@ -27,6 +27,8 @@ interface Fixture {
   stripH: number
   mode: '2d' | 'dss'
   detector: 'peak' | 'average'
+  /** How a bin wider than a pixel is filled; absent = `linear`, the shipped fill. */
+  interpolation?: 'linear' | 'nearest'
   view?: [number, number]
   newestAtTop?: boolean
   offsetRows?: number
@@ -42,6 +44,11 @@ export const FIXTURES: Record<string, Fixture> = {
   // History through each row's own span, zoomed in far enough (6.25 Hz a pixel, 7.8 Hz a bin) that
   // the rows interpolate: the carriers stay straight across the QSY.
   'wf-retune': { set: 'retune', w: 320, h: 160, traceH: 0, stripH: 18, mode: '2d', detector: 'peak', view: [1200, 3200] },
+  // The same zoomed history held flat to each bin's edges (the waterfall ⚙ strip's "Hard"). No
+  // stored picture: the two backends must agree on it (aggregate.ts's branch and its GLSL twin),
+  // and each must DIFFER from its own `wf-retune`, or the setting never reached the pixels and the
+  // agreement proves nothing.
+  'wf-retune-nearest': { set: 'retune', w: 320, h: 160, traceH: 0, stripH: 18, mode: '2d', detector: 'peak', interpolation: 'nearest', view: [1200, 3200] },
   // Scrollback with the flow flipped: newest at the top, 30 rows back.
   'wf-scrollback': { set: 'two-tone', w: 320, h: 160, traceH: 0, stripH: 18, mode: '2d', detector: 'peak', newestAtTop: true, offsetRows: 30 },
   'scope-wide-peak': { set: 'wide', w: 320, h: 192, traceH: 86, stripH: 0, mode: '2d', detector: 'peak' },
@@ -76,6 +83,7 @@ function sceneFor(fx: Fixture, lut: Uint8ClampedArray, last: Frame | null, seq: 
     lut,
     layout: { traceH: fx.traceH, stripH: fx.stripH, lineWidth: 1 },
     detector: fx.detector,
+    interpolation: fx.interpolation,
     mode: fx.mode,
     offsetRows: fx.offsetRows ?? 0,
     newestAtTop: fx.newestAtTop ?? false,

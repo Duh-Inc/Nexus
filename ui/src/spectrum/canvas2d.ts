@@ -15,7 +15,7 @@
 import { aggregateRow, lutIndex, safeDbPerUnit, strengthIn } from './aggregate'
 import { DSS_COLS, DSS_ROWS, drawDss2d, dssStrengths } from './dss'
 import { M_CEIL, M_DB_PER_UNIT, M_FLOOR, M_HI, M_LO, M_N, META, type SpectrumRing } from './ring'
-import type { Backend, Detector, SpectrumLayout, SpectrumScene } from './types'
+import type { Backend, Detector, Interpolation, SpectrumLayout, SpectrumScene } from './types'
 
 /** The three bands of a `height`-pixel canvas for a layout, clamped so they always fit. */
 export function bandsOf(layout: SpectrumLayout, height: number): { traceH: number; plotH: number; stripH: number } {
@@ -39,6 +39,7 @@ interface BandKey {
   lut: Uint8ClampedArray
   newestAtTop: boolean
   detector: Detector
+  interpolation: Interpolation
   generation: number
 }
 
@@ -105,12 +106,12 @@ export class Canvas2dBackend implements Backend {
       // The 2D band is gone from the canvas; it is rebuilt when the 2D view comes back.
       this.bandKey = null
       const { generation, serial } = this.ring
-      const key = `${generation}:${serial}:${scene.offsetRows}:${scene.view.loHz}:${scene.view.hiHz}:${scene.detector}:${w}:${plotH}`
+      const key = `${generation}:${serial}:${scene.offsetRows}:${scene.view.loHz}:${scene.view.hiHz}:${scene.detector}:${scene.interpolation ?? 'linear'}:${w}:${plotH}`
       if (key === this.dssKey && lut === this.dssLut) return
       this.dssKey = key
       this.dssLut = lut
       const offset = Math.max(0, scene.offsetRows)
-      const rows = dssStrengths(this.ring, DSS_COLS, scene.view, offset, scene.detector, this.dssField, this.dssPresent)
+      const rows = dssStrengths(this.ring, DSS_COLS, scene.view, offset, scene.detector, this.dssField, this.dssPresent, scene.interpolation)
       drawDss2d(ctx, w, plotH, this.dssField, this.dssPresent, rows, DSS_COLS, lut)
       return
     }
@@ -144,6 +145,7 @@ export class Canvas2dBackend implements Backend {
       k.lut !== scene.lut ||
       k.newestAtTop !== scene.newestAtTop ||
       k.detector !== scene.detector ||
+      k.interpolation !== (scene.interpolation ?? 'linear') ||
       k.generation !== ring.generation
     const step = want - this.shown
     if (!cold && step === 0) return
@@ -163,6 +165,7 @@ export class Canvas2dBackend implements Backend {
         lut: scene.lut,
         newestAtTop: scene.newestAtTop,
         detector: scene.detector,
+        interpolation: scene.interpolation ?? 'linear',
         generation: ring.generation,
       }
     } else {
@@ -219,6 +222,7 @@ export class Canvas2dBackend implements Backend {
       px,
       scene.detector,
       ring.meta[m + M_DB_PER_UNIT],
+      scene.interpolation,
     )
     for (let x = 0; x < w; x++) {
       const v = px[x]
@@ -245,7 +249,7 @@ export class Canvas2dBackend implements Backend {
     const f = trace.frame
     const px = this.px
     const { loHz, hiHz } = scene.view
-    aggregateRow(f.bins, 0, f.bins.length, f.loHz, f.hiHz, loHz, hiHz, px, scene.detector, safeDbPerUnit(f.dbPerUnit))
+    aggregateRow(f.bins, 0, f.bins.length, f.loHz, f.hiHz, loHz, hiHz, px, scene.detector, safeDbPerUnit(f.dbPerUnit), scene.interpolation)
     const { floor, ceil } = trace.range
     if (!this.grad || this.gradLut !== lut || this.gradH !== traceH) {
       const [i0, i1, i2] = TRACE_STOPS.map((i) => i * 4)

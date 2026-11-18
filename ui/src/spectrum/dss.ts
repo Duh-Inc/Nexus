@@ -33,7 +33,7 @@
 
 import { aggregateRow, GLSL_AGGREGATE, strengthIn } from './aggregate'
 import { M_CEIL, M_DB_PER_UNIT, M_FLOOR, M_HI, M_LO, M_N, META, type SpectrumRing } from './ring'
-import type { Detector } from './types'
+import type { Detector, Interpolation } from './types'
 
 // Perspective geometry (shared with AetherSDR's dss_mesh.vert constants).
 const K_BACK_WIDTH = 0.6 // back row width / front
@@ -77,6 +77,7 @@ export function dssStrengths(
   detector: Detector,
   out: Float32Array,
   present: Uint8Array,
+  interp?: Interpolation,
 ): number {
   const rows = Math.max(0, Math.min(DSS_ROWS, ring.count - offsetRows))
   // Two rows past the back one feed its median.
@@ -94,7 +95,7 @@ export function dssStrengths(
     if (!(n > 0) || !(hi > lo)) continue
     have[r] = 1
     const dbPerUnit = ring.meta[m + M_DB_PER_UNIT]
-    aggregateRow(ring.values, idx * ring.cols, n, lo, hi, view.loHz, view.hiHz, px, detector, dbPerUnit)
+    aggregateRow(ring.values, idx * ring.cols, n, lo, hi, view.loHz, view.hiHz, px, detector, dbPerUnit, interp)
     const floor = ring.meta[m + M_FLOOR]
     const ceil = ring.meta[m + M_CEIL]
     for (let c = 0; c < cols; c++) {
@@ -247,6 +248,7 @@ uniform int uDepth;
 uniform int uOffset;
 uniform int uCols;
 uniform int uDetector;
+uniform int uInterp;
 uniform float uViewLo;
 uniform float uViewHi;
 out vec4 outColor;
@@ -261,7 +263,7 @@ bool rowStrength(int age, float x, out float s) {
   vec4 m1 = texelFetch(uMeta, ivec2(1, r), 0);
   float v;
   if (aggregateRow(uRing, r, int(m0.z), m0.x, m0.y, uViewLo, (uViewHi - uViewLo) / float(uCols), x,
-                   uDetector, m0.w, v)) s = strengthIn(v, m1.x, m1.y);
+                   uDetector, m0.w, uInterp, v)) s = strengthIn(v, m1.x, m1.y);
   return true;
 }
 void main() {

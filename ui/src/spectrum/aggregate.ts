@@ -12,12 +12,16 @@
 //   (average). The row is linear in dB, so the average converts to power and back. Averaging the
 //   dB values themselves is the geometric-mean trap `resampleRow`'s header warns about: it reads
 //   a carrier among noise bins several dB low.
-// - A bin covering more than one pixel interpolates between the two nearest bin centres, whatever
-//   the detector. Point-sampling there is the operator's "looks so 8 bit" (2026-08-03).
+// - A bin covering more than one pixel is filled by `Interpolation`, which is orthogonal to the
+//   detector: the detector only ever runs in the OTHER regime. `linear` blends the two nearest bin
+//   centres and is the default and the shipped behaviour — point-sampling here is the operator's
+//   "looks so 8 bit" (2026-08-03). `nearest` holds the bin the pixel's centre falls in, by the
+//   decimating branch's own cell rule, so the two regimes agree at the crossover; that draws bin
+//   edges as edges, which is the sharper, blockier look a rig's own panadapter has.
 //
 // Never bin-skipping: a decimating pixel visits every bin its band touches.
 
-import type { Detector } from './types'
+import type { Detector, Interpolation } from './types'
 
 /** log2(10) / 10: turns a dB number into log2 of its power ratio. */
 const LOG2_10_OVER_10 = Math.LOG2E * Math.LN10 / 10
@@ -41,6 +45,7 @@ export function aggregateRow(
   out: Float32Array,
   detector: Detector,
   dbPerUnit: number,
+  interp: Interpolation = 'linear',
 ): void {
   const outW = out.length
   if (outW === 0) return
@@ -57,6 +62,7 @@ export function aggregateRow(
   // powers stays far inside float range on the GPU as well.
   const k = dbPerUnit * LOG2_10_OVER_10
   const average = detector === 'average'
+  const nearest = interp === 'nearest'
   for (let x = 0; x < outW; x++) {
     const fLo = viewLoHz + x * pxHz
     const fMid = fLo + pxHz * 0.5
@@ -82,6 +88,13 @@ export function aggregateRow(
         }
         out[x] = m
       }
+    } else if (nearest) {
+      // The bin the pixel's CENTRE falls in, by the decimating branch's cell rule (bin `i` covers
+      // `[lo + i·w, lo + (i+1)·w)`), held flat across every pixel that bin covers.
+      let i = Math.floor((fMid - rowLoHz) / binHz)
+      if (i < 0) i = 0
+      else if (i > n - 1) i = n - 1
+      out[x] = src[at + i]
     } else {
       let t = (fMid - rowLoHz) / binHz - 0.5
       if (t < 0) t = 0
@@ -119,12 +132,16 @@ export function safeDbPerUnit(d: number): number {
  * The GLSL twin of `aggregateRow`, `lutIndex` and `strengthIn`, for every WebGL2 program that
  * reads bins. `src` is a single-channel float texture with one row per stored row; `row` picks it.
  * Returns false where `aggregateRow` writes NaN.
+ *
+ * The two mode flags are ints because a uniform cannot be a string: `detector` is 1 for `average`
+ * and 0 for `peak`, `interp` is 1 for `nearest` and 0 for `linear`. Only one of them is ever read
+ * per pixel — they belong to the two regimes.
  */
 export const GLSL_AGGREGATE = /* glsl */ `
 const float LOG2_10_OVER_10 = ${LOG2_10_OVER_10.toFixed(17)};
 
 bool aggregateRow(sampler2D src, int row, int n, float rowLo, float rowHi, float viewLo,
-                  float pxHz, float x, int detector, float dbPerUnit, out float v) {
+                  float pxHz, float x, int detector, float dbPerUnit, int interp, out float v) {
   v = 0.0;
   float rowSpan = rowHi - rowLo;
   if (n <= 0 || !(rowSpan > 0.0) || !(pxHz > 0.0)) return false;
@@ -148,6 +165,9 @@ bool aggregateRow(sampler2D src, int row, int n, float rowLo, float rowHi, float
       for (int i = i0 + 1; i <= i1; i++) m = max(m, texelFetch(src, ivec2(i, row), 0).r);
       v = m;
     }
+  } else if (interp == 1) {
+    int i = clamp(int(floor((fMid - rowLo) / binHz)), 0, n - 1);
+    v = texelFetch(src, ivec2(i, row), 0).r;
   } else {
     float t = clamp((fMid - rowLo) / binHz - 0.5, 0.0, float(n - 1));
     int b0 = int(floor(t));

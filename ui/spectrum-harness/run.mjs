@@ -596,7 +596,9 @@ const RENDER_FIXTURES = [
   'dss-two-tone',
 ]
 /** Fixtures checked only backend against backend, with no stored picture (see the loop). */
-const CROSS_ONLY = ['wf-uhf']
+const CROSS_ONLY = ['wf-uhf', 'wf-retune-nearest']
+/** A cross-only fixture that must NOT draw what a stored fixture draws: [fixture, the one it varies]. */
+const MUST_DIFFER = { 'wf-retune-nearest': 'wf-retune' }
 const RENDER_BACKENDS = ['webgl2', 'canvas2d']
 const RENDER_BASELINES = join(BASELINES, 'renderer')
 const EXACT = { channel: 0, maxFraction: 0 }
@@ -700,6 +702,17 @@ async function renderChecks(cdp, base, backend) {
     const cmp = comparePixels(a, b)
     record({ kind: 'render-cross', id: fx, outcome: cmp.match ? 'pass' : 'fail', detail: cmp.reason || pct(cmp), differing: cmp.differing, maxDelta: cmp.maxDelta })
     line('BOTH', `webgl2 vs canvas2d: ${fx}`, pct(cmp), cmp.match ? 'agree' : `FAIL (${cmp.reason})`)
+    // The control: a setting both backends ignored would agree trivially. Each must draw something
+    // other than the fixture it varies.
+    const other = MUST_DIFFER[fx]
+    if (other) {
+      for (const [be, mine] of [['webgl2', a], ['canvas2d', b]]) {
+        const same = comparePixels(mine, drawn[`${be}-${other}`])
+        const id = `${fx} vs ${other} (${be})`
+        record({ kind: 'render-control', id, outcome: same.match ? 'fail' : 'pass', detail: same.match ? 'identical: the setting did not reach the pixels' : pct(same) })
+        line('CONTROL', id, pct(same), same.match ? 'FAIL (no difference)' : 'differs, as it must')
+      }
+    }
   }
   // Drawing again changes nothing. A host draws at display rate and commits rows far slower, so a
   // draw that leaves anything behind (canvas-2D blits its band only when a row arrives) builds up

@@ -44,8 +44,23 @@ export interface DisplayRange {
 }
 
 /** How a pixel that covers several bins reduces them: their maximum, or the mean of their power.
- *  A pixel narrower than a bin interpolates between the two nearest bin centres either way. */
+ *  This is the DECIMATING half of the mapping; `Interpolation` is the magnifying half. */
 export type Detector = 'peak' | 'average'
+
+/** What a pixel NARROWER than a bin shows — the magnifying half of the mapping, and orthogonal to
+ *  the detector, which never runs at the same time as this one does.
+ *
+ *  `linear` blends the two nearest bin centres. It is the shipped behaviour and it was chosen
+ *  deliberately: point-sampling here is the operator's "looks so 8 bit" (2026-08-03).
+ *  `nearest` holds each bin's own value across every pixel it covers, so a bin edge draws as an
+ *  edge. Zoomed in past one bin per pixel that is the difference between a carrier with soft
+ *  shoulders and one with a hard step — the look a rig's own panadapter has.
+ *
+ *  NEITHER ADDS INFORMATION. A carrier's apparent width is the analysis window's Hann main lobe
+ *  (`tempo-core::spectrum::WindowN`: 23.4 Hz at the digital waterfall's 2048), not the display
+ *  grid's. This chooses how the grid between bin centres is drawn, never what is in it, and no
+ *  value of it makes a lobe thinner. */
+export type Interpolation = 'linear' | 'nearest'
 
 /** Bands of the canvas, in device pixels. The trace sits at the top, the waterfall fills the rest,
  *  and a strip at the bottom is left for the host's axis. `dss` draws the 3-D stack over the trace
@@ -70,6 +85,9 @@ export interface SpectrumScene {
   lut: Uint8ClampedArray
   layout: SpectrumLayout
   detector: Detector
+  /** How a pixel narrower than a bin is filled. Absent = `linear`, the shipped behaviour, so a
+   *  host that does not offer the control draws exactly what it drew before. */
+  interpolation?: Interpolation
   mode: SpectrumMode
   /** Scrollback: the age of the newest visible row, 0 = live. A paused host advances it by one
    *  per committed row to hold the picture still. */
