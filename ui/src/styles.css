@@ -28511,9 +28511,17 @@ button.sat-chip:disabled {
   color: var(--alert-warning);
   border-color: var(--alert-warning);
 }
-.wf-dss.on {
+.wf-dss.on,
+.wf-gear.on {
   color: var(--accent);
   border-color: var(--accent);
+}
+/* The waterfall's ⚙ strip (spectrum/WaterfallLookStrip.tsx), under the header row while ⚙ is on.
+   It is the rig scope's `.ph-scope-gear` row: content height, and it wraps rather than clips, so
+   it takes its height from the picture (`.wf-stage` is the grower) and no chip is ever lost. */
+.waterfall-wrap > .wf-look {
+  flex: 0 0 auto;
+  padding: var(--space-1) var(--space-2);
 }
 /* Scroll-direction toggle — a worded button, so it must not be squeezed to an ellipsis in the
    narrow docked header (the header wraps instead; see .waterfall-wrap > .panel-header). */

@@ -8,7 +8,7 @@
 // are measurements and tokens, so they stay in the code — as do the zoom LABELS, which live in
 // `waterfall.ts` and are not this batch's file. The one thing drawn on the canvas that IS prose
 // is the paused chip, and it comes from the catalog.
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type Ref } from 'react'
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type Ref } from 'react'
 import { getSpectrumRow } from '../api'
 import { sampleLut, type ColormapName } from '../colormaps'
 import { drawScaleStrip, scaleStripHeight, scaleTicks, SCALE_MIN_GAP_PX } from '../freqScale'
@@ -42,6 +42,16 @@ import { createSpectrumRenderer, type SpectrumRenderer, type SpectrumScene } fro
 import { autoRange } from '../spectrum/scaleRange'
 import { audioRowPassband, noiseFloorWindowHz } from '../spectrum/markers'
 import { surfaceGet, surfaceHasOwn, surfaceSet } from '../features/windowScope'
+import { WaterfallLookStrip } from '../spectrum/WaterfallLookStrip'
+import {
+  LOOK_DEFAULTS,
+  LOOK_KEY,
+  loadLook,
+  rowMsAt,
+  sameLook,
+  saveLook,
+  type WaterfallLook,
+} from '../spectrum/waterfallLook'
 import { PalettePicker } from './PalettePicker'
 import { MOD_LABEL } from '../platform'
 import { t } from '../i18n'
@@ -571,6 +581,40 @@ export function Waterfall({
   const [newestAtTop, setNewestAtTop] = useState<boolean>(() => surfaceGet(FLOW_KEY) !== 'up')
   const newestAtTopRef = useRef(newestAtTop)
   newestAtTopRef.current = newestAtTop
+  // The ⚙ strip (spectrum/waterfallLook.ts): resolution, smoothing, edges and speed. App-wide,
+  // because the resolution is a request to the one producer every audio waterfall reads. Read off
+  // the ref by the draw loop and the fetch, like every other live setting here.
+  const [look, setLookState] = useState<WaterfallLook>(loadLook)
+  const lookRef = useRef(look)
+  lookRef.current = look
+  const [gear, setGear] = useState(false)
+  const gearId = useId()
+  const setLook = (patch: Partial<WaterfallLook>) => {
+    const next = { ...lookRef.current, ...patch }
+    if (sameLook(next, lookRef.current)) return
+    const redraw = next.edges !== lookRef.current.edges
+    lookRef.current = next
+    setLookState(next)
+    saveLook(next)
+    // Edges are a drawing choice over rows already held: repaint them now. The other three
+    // change what the NEXT rows are, and history keeps the rows it was given.
+    if (redraw) rebuildRef.current?.()
+  }
+  // Another window (a torn-off waterfall) changed the look: follow it, so the strip never says
+  // two different things on two screens about the one producer they both read.
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== LOOK_KEY) return
+      const next = loadLook()
+      if (sameLook(next, lookRef.current)) return
+      const redraw = next.edges !== lookRef.current.edges
+      lookRef.current = next
+      setLookState(next)
+      if (redraw) rebuildRef.current?.()
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [])
   /** Scrollback while paused: the age of the newest row on screen (0 = the live tail). A row
    *  committed while paused adds one, so the paused picture holds still. */
   const offsetRef = useRef(0)
@@ -759,6 +803,8 @@ export function Waterfall({
       layout: { traceH: 0, stripH: Math.round(axisHFor(cssH) * scaleY), lineWidth: 1 },
       // A pixel over several bins shows their maximum, as `resampleRow` always drew it.
       detector: 'peak',
+      // …and a pixel narrower than a bin is filled as the ⚙ strip's EDGES say (linear = shipped).
+      interpolation: lookRef.current.edges,
       mode: dssRef.current ? 'dss' : '2d',
       offsetRows: offsetRef.current,
       newestAtTop: newestAtTopRef.current,
@@ -827,7 +873,11 @@ export function Waterfall({
       // bottom line and desync the AGC/legend from the displayed pixels).
       let spec
       try {
-        spec = await getSpectrumRow(txRef.current)
+        // The ⚙ strip's two producer-side choices ride the read. At the shipped values nothing is
+        // sent, so the backend sees exactly the call every build before the strip made.
+        const l = lookRef.current
+        const shipped = l.resolution === LOOK_DEFAULTS.resolution && l.smoothing === LOOK_DEFAULTS.smoothing
+        spec = await getSpectrumRow(txRef.current, shipped ? undefined : { window: l.resolution, smoothing: l.smoothing })
       } catch {
         return
       }
@@ -1222,7 +1272,8 @@ export function Waterfall({
       }
       acc += now - last
       last = now
-      const rowMs = reducedMotion() ? ROW_MS_REDUCED : rowMsRef.current
+      // Reduced motion wins over the ⚙ strip's speed: it is an accessibility setting, not a look.
+      const rowMs = reducedMotion() ? ROW_MS_REDUCED : rowMsAt(lookRef.current.speed, rowMsRef.current)
       // A fetch that never settles must not latch the waterfall dead — give it up and let the
       // next tick poll again. BEFORE the claim below, so the freed latch is usable this
       // same tick.
@@ -1424,6 +1475,20 @@ export function Waterfall({
             }}
           />
         </label>
+        {/* The ⚙ strip's toggle (the rig scope's pattern): set once and left, so one click away
+            rather than crowding this row. Lit while the look differs from the shipped one, so a
+            sharper picture always has a visible reason. */}
+        <button
+          type="button"
+          className={`wf-popout wf-gear${gear || !sameLook(look, LOOK_DEFAULTS) ? ' on' : ''}`}
+          aria-expanded={gear}
+          aria-controls={gearId}
+          aria-label={t('waterfall.look.gear.aria')}
+          title={t('waterfall.look.gear.title')}
+          onClick={() => setGear(!gear)}
+        >
+          ⚙
+        </button>
         {/* Scroll direction. The operator's own wording (2026-08-14) names the CURRENT
             state; those two words alone do not say where a new row lands, so the tooltip
             spells out both halves — which end is newest and which way history travels. */}
@@ -1502,6 +1567,7 @@ export function Waterfall({
             buttons — the ✕ is in the same place on every removable pane in the app. */}
         <PaneCloseButton title={paneTitle ?? ''} onRemove={onRemove} hideNote={hideNote} />
       </div>
+      {gear && <WaterfallLookStrip id={gearId} look={look} onChange={setLook} />}
       {/* A display well (styles.css DISPLAY WELLS): the floor is the palette's and dark already;
           the well is what the axis strip, the markers, the legend and the held badge are
           painted in, so they read the same on it in either theme. */}

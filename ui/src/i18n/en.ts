@@ -15451,6 +15451,46 @@ export const EN = {
   'waterfall.flow.up.title.dss':
     'Scrolls up — the newest row appears at the BOTTOM and history travels upward (the default). Click for the other way: newest at the top, history travelling down. The 3D view keeps its own front-to-back perspective either way.',
   'waterfall.dss.on.title': 'Switch to the flat 2D waterfall',
+  'waterfall.look.gear.aria': 'Waterfall sharpness settings',
+  'waterfall.look.gear.title':
+    'Sharpness: resolution, smoothing, edges and speed. Lit while the picture differs from the default.',
+  'waterfall.look.aria': 'Waterfall sharpness',
+  'waterfall.look.res.aria': 'Resolution',
+  'waterfall.look.res.fast.title':
+    'Wide signals, quick response: a carrier is about 47 Hz wide and a signal edge shows within 85 ms',
+  'waterfall.look.res.balanced.title':
+    'The default: a carrier is about 23 Hz wide and a signal edge shows within 171 ms',
+  'waterfall.look.res.sharp.title':
+    'Thin signals: a carrier is about 12 Hz wide, at twice the vertical smear (341 ms). FT8 tones smear into each other more along the time axis.',
+  'waterfall.look.smooth.aria': 'Smoothing',
+  'waterfall.look.smooth.average': 'Avg',
+  'waterfall.look.smooth.average.title':
+    'Each row is the average of the spectra since the last row: a calm noise floor, the default',
+  'waterfall.look.smooth.peak': 'Peak',
+  'waterfall.look.smooth.peak.title':
+    'Each row holds the strongest reading since the last row: signals stay bright, the noise floor is a little grainier',
+  'waterfall.look.smooth.live': 'Live',
+  'waterfall.look.smooth.live.title':
+    'Each row is one spectrum, nothing averaged: the speckled noise floor and thin lines of a radio’s own scope',
+  'waterfall.look.edges.aria': 'Edges when zoomed in',
+  'waterfall.look.edges.linear': 'Smooth',
+  'waterfall.look.edges.linear.title':
+    'Zoomed in, blend between neighbouring frequency bins: soft shoulders, the default',
+  'waterfall.look.edges.nearest': 'Hard',
+  'waterfall.look.edges.nearest.title':
+    'Zoomed in, draw each frequency bin as a solid block: hard edges, like a radio’s own panadapter',
+  'waterfall.look.speed.aria': 'Scroll speed',
+  'waterfall.look.speed.title':
+    'How fast new rows arrive. Reduced motion, when it is on, still slows the waterfall whatever this says.',
+  'waterfall.look.speed.slow': 'Slow',
+  'waterfall.look.speed.normal': 'Normal',
+  'waterfall.look.speed.fast': 'Fast',
+  'waterfall.look.preset.aria': 'Presets',
+  'waterfall.look.preset.rig': 'Rig',
+  'waterfall.look.preset.rig.title':
+    'A radio scope’s look: 12 Hz resolution, no averaging, hard edges and a fast scroll. Any setting can be changed afterwards.',
+  'waterfall.look.preset.default': 'Default',
+  'waterfall.look.preset.default.title': 'Put every sharpness setting back to the default',
   'waterfall.dss.off.title':
     'Switch to the 3D stacked-spectrum view (a rolling perspective of the last ~96 rows)',
   'waterfall.pause.title':

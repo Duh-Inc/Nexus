@@ -5872,8 +5872,17 @@ export function subscribeSnapshot(fn: (snap: AppSnapshot) => void): () => void {
 }
 
 /** Fetch the next waterfall row (a real Spectrum from the core). */
-export async function getSpectrumRow(_transmitting: boolean): Promise<Spectrum> {
-  return invoke<Spectrum>('get_spectrum_row')
+/** The digital waterfall's ⚙ strip, as `get_spectrum_row` takes it (spectrum/waterfallLook.ts).
+ *  `window` is a standing request to the producer that renews on every read and lapses on its own;
+ *  `smoothing` picks which reading of the averaging window this read draws. Both absent = the row
+ *  every other caller gets. */
+export interface SpectrumRowLook {
+  window?: ScopeWindow
+  smoothing?: 'average' | 'peak' | 'live'
+}
+
+export async function getSpectrumRow(_transmitting: boolean, look?: SpectrumRowLook): Promise<Spectrum> {
+  return look ? invoke<Spectrum>('get_spectrum_row', { window: look.window, smoothing: look.smoothing }) : invoke<Spectrum>('get_spectrum_row')
 }
 
 /**

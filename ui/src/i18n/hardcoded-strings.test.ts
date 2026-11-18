@@ -720,6 +720,7 @@ const MIGRATED = [
   // The scope's ⚙ strip, migrated from birth: its only literals are the window widths and the
   // averaging times, measurements held as named constants.
   'spectrum/ScaleStrip.tsx',
+  'spectrum/WaterfallLookStrip.tsx',
   'components/FastGraph.tsx',
   'components/LevelMeter.tsx',
   'components/LiveMeters.tsx',
