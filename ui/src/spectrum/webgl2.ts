@@ -19,10 +19,11 @@
 // program and texture and re-uploads the ring whole. The facade (index.ts) listens for the events
 // and draws on canvas-2D in between.
 
-import { GLSL_AGGREGATE, safeDbPerUnit } from './aggregate'
+import { interpCode, GLSL_AGGREGATE, safeDbPerUnit } from './aggregate'
 import { bandsOf, TRACE_STOPS } from './canvas2d'
 import {
   DSS_GRID_ALPHA,
+  DSS_HEIGHT_CURVE,
   DSS_LOOK_DEFAULT,
   DSS_MAX_GL_COLS,
   DSS_ROWS,
@@ -250,7 +251,7 @@ function texture(gl: WebGL2RenderingContext, unit: number, format: number, w: nu
 const WATERFALL_UNIFORMS = ['uRing', 'uMeta', 'uLut', 'uH', 'uTop', 'uBandH', 'uW', 'uViewLo', 'uViewHi', 'uHead', 'uCount', 'uDepth', 'uOffset', 'uNewestAtTop', 'uDetector', 'uInterp']
 const TRACE_UNIFORMS = ['uTrace', 'uLut', 'uN', 'uRowLo', 'uRowHi', 'uViewSpan', 'uW', 'uH', 'uTraceH', 'uRange', 'uDetector', 'uDbPerUnit', 'uLineWidth', 'uInterp']
 const DERIVE_UNIFORMS = ['uRing', 'uMeta', 'uHead', 'uCount', 'uDepth', 'uOffset', 'uCols', 'uDetector', 'uViewLo', 'uViewHi', 'uInterp', 'uMedian']
-const MESH_UNIFORMS = ['uField', 'uLut', 'uCols', 'uRows', 'uW', 'uH', 'uPlotH', 'uStyle']
+const MESH_UNIFORMS = ['uField', 'uLut', 'uCols', 'uRows', 'uW', 'uH', 'uPlotH', 'uStyle', 'uZCurve']
 const GRID_UNIFORMS = ['uW', 'uH', 'uTop', 'uColor']
 
 export class WebGl2Backend implements Backend {
@@ -475,7 +476,7 @@ export class WebGl2Backend implements Backend {
     gl.uniform1i(p.u.uOffset, Math.max(0, Math.floor(scene.offsetRows)))
     gl.uniform1i(p.u.uNewestAtTop, scene.newestAtTop ? 1 : 0)
     gl.uniform1i(p.u.uDetector, scene.detector === 'average' ? 1 : 0)
-    gl.uniform1i(p.u.uInterp, scene.interpolation === 'nearest' ? 1 : 0)
+    gl.uniform1i(p.u.uInterp, interpCode(scene.interpolation))
     gl.drawArrays(gl.TRIANGLES, 0, 3)
   }
 
@@ -513,7 +514,7 @@ export class WebGl2Backend implements Backend {
       gl.uniform1f(p.u.uTraceH, traceH)
       gl.uniform2f(p.u.uRange, range.floor, range.ceil)
       gl.uniform1i(p.u.uDetector, scene.detector === 'average' ? 1 : 0)
-      gl.uniform1i(p.u.uInterp, scene.interpolation === 'nearest' ? 1 : 0)
+      gl.uniform1i(p.u.uInterp, interpCode(scene.interpolation))
       gl.uniform1f(p.u.uDbPerUnit, safeDbPerUnit(frame.dbPerUnit))
       gl.uniform1f(p.u.uLineWidth, Math.max(1, scene.layout.lineWidth))
     }
@@ -553,7 +554,7 @@ export class WebGl2Backend implements Backend {
     gl.uniform1i(d.u.uOffset, offset)
     gl.uniform1i(d.u.uCols, cols)
     gl.uniform1i(d.u.uDetector, scene.detector === 'average' ? 1 : 0)
-    gl.uniform1i(d.u.uInterp, scene.interpolation === 'nearest' ? 1 : 0)
+    gl.uniform1i(d.u.uInterp, interpCode(scene.interpolation))
     const look = scene.dssLook ?? DSS_LOOK_DEFAULT
     gl.uniform1i(d.u.uMedian, look.impulse ? 1 : 0)
     gl.uniform1f(d.u.uViewLo, scene.view.loHz - this.origin)
@@ -588,6 +589,7 @@ export class WebGl2Backend implements Backend {
     const m = res.dssMesh
     gl.useProgram(m.program)
     gl.uniform1i(m.u.uStyle, look.style === 'spikes' ? 1 : 0)
+    gl.uniform1f(m.u.uZCurve, DSS_HEIGHT_CURVE[look.height ?? 'lift'])
     gl.uniform1i(m.u.uCols, cols)
     gl.uniform1i(m.u.uRows, rows)
     gl.uniform1f(m.u.uW, this.w)

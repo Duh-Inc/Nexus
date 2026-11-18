@@ -356,13 +356,13 @@ struct FeedRows {
     /// The window length the rows in `audio` were computed at. A change opens a fresh averaging
     /// window: two window lengths share span, bin count and source when the bin count does not
     /// move with them, so `RowAverage::push` could not see the difference (the `scope_win` rule).
-    audio_win: spectrum::WindowN,
+    audio_win: AudioAnalysis,
     /// The digital waterfall's standing request for its analysis window, and when it was last
     /// renewed. It rides the READ (see [`SpectrumFeed::audio_frame_with`]) and lapses after
     /// [`SpectrumFeed::SCOPE_REQ_TTL`], so a waterfall that leaves the screen cannot leave the
     /// producer computing a longer FFT for nobody. Lapsed or never asked = `Balanced`, the
     /// shipped row.
-    audio_req: Option<(spectrum::WindowN, Instant)>,
+    audio_req: Option<(AudioAnalysis, Instant)>,
     /// The NEWEST RF frame and when it was published. Everything that asks "what is the RF
     /// picture now" reads this one; the frames before it wait in `rf_prev`.
     rf: Option<(SpectrumFrame, Instant)>,
@@ -582,6 +582,25 @@ struct ScopeReq {
     /// scope's HiDef zoom is one more value of it.
     win: spectrum::ScopeAnalysis,
     at: Instant,
+}
+
+/// How the producer analyses the audio row the digital waterfall reads: its window length, and
+/// whether each frame's energy is moved to the frequencies it is actually at
+/// (`tempo_core::spectrum::power_spectrum_reassigned`). The default is the shipped row.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AudioAnalysis {
+    pub win: spectrum::WindowN,
+    pub reassign: bool,
+}
+
+impl AudioAnalysis {
+    /// A plain (not reassigned) analysis at `win`.
+    pub const fn at(win: spectrum::WindowN) -> Self {
+        Self {
+            win,
+            reassign: false,
+        }
+    }
 }
 
 /// What a READ of an averaging slot hands back from the frames published since the last read.
@@ -863,13 +882,13 @@ impl SpectrumFeed {
     /// Publish the audio-FFT row (the rx-dsp thread) into the running average, computed at the
     /// shipped `Balanced` window.
     pub fn publish_audio(&self, row: Spectrum) {
-        self.publish_audio_at(row, spectrum::WindowN::Balanced);
+        self.publish_audio_at(row, AudioAnalysis::default());
     }
 
     /// [`Self::publish_audio`] for a row computed at `win` — the one [`Self::audio_window`] asked
     /// for. A window that differs from the slot's opens a fresh average, so one drawn row never
     /// blends two resolutions.
-    pub fn publish_audio_at(&self, row: Spectrum, win: spectrum::WindowN) {
+    pub fn publish_audio_at(&self, row: Spectrum, win: AudioAnalysis) {
         if let Ok(mut g) = self.rows.lock() {
             // Under the TX hold the frame is a picture of the muted receiver, not the band —
             // drop it, and keep the LAST REAL picture's freshness alive so readers repeat it
@@ -1016,7 +1035,7 @@ impl SpectrumFeed {
     /// the rig scope's span, and lapses on its own when the waterfall stops reading.
     pub fn audio_row_with(
         &self,
-        win: Option<spectrum::WindowN>,
+        win: Option<AudioAnalysis>,
         smoothing: RowSmoothing,
     ) -> Option<Spectrum> {
         self.audio_frame_with(win, smoothing).map(Spectrum::from)
@@ -1025,7 +1044,7 @@ impl SpectrumFeed {
     /// [`Self::audio_row_with`], as a frame.
     pub fn audio_frame_with(
         &self,
-        win: Option<spectrum::WindowN>,
+        win: Option<AudioAnalysis>,
         smoothing: RowSmoothing,
     ) -> Option<SpectrumFrame> {
         let mut g = self.rows.lock().ok()?;
@@ -1121,7 +1140,7 @@ impl SpectrumFeed {
     /// The analysis window the audio row should be computed at (the rx-dsp thread, once a tick):
     /// what the digital waterfall last asked for while the request is fresh, `Balanced` (the
     /// shipped row) otherwise. One mutex read, like [`Self::scope_request`].
-    pub fn audio_window(&self) -> spectrum::WindowN {
+    pub fn audio_window(&self) -> AudioAnalysis {
         self.rows
             .lock()
             .ok()
@@ -70111,8 +70130,11 @@ mod tests {
     #[test]
     fn a_window_change_restarts_the_audio_average() {
         let feed = SpectrumFeed::default();
-        feed.publish_audio_at(audio(vec![0.9]), spectrum::WindowN::Balanced);
-        feed.publish_audio_at(audio(vec![0.1]), spectrum::WindowN::Sharp);
+        feed.publish_audio_at(audio(vec![0.9]), AudioAnalysis::default());
+        feed.publish_audio_at(
+            audio(vec![0.1]),
+            AudioAnalysis::at(spectrum::WindowN::Sharp),
+        );
         assert_eq!(
             feed.audio_frames_pending_for_test(),
             1,
@@ -70131,20 +70153,35 @@ mod tests {
         let feed = SpectrumFeed::default();
         assert_eq!(
             feed.audio_window(),
-            spectrum::WindowN::Balanced,
+            AudioAnalysis::default(),
             "nobody asked"
         );
         feed.publish_audio(audio(vec![0.5]));
-        feed.audio_row_with(Some(spectrum::WindowN::Sharp), RowSmoothing::Average);
-        assert_eq!(feed.audio_window(), spectrum::WindowN::Sharp);
+        let sharp = AudioAnalysis::at(spectrum::WindowN::Sharp);
+        feed.audio_row_with(Some(sharp), RowSmoothing::Average);
+        assert_eq!(feed.audio_window(), sharp);
         feed.audio_row_with(None, RowSmoothing::Average);
-        assert_eq!(
-            feed.audio_window(),
-            spectrum::WindowN::Sharp,
-            "a plain read asks for nothing"
-        );
-        feed.audio_row_with(Some(spectrum::WindowN::Fast), RowSmoothing::Live);
-        assert_eq!(feed.audio_window(), spectrum::WindowN::Fast);
+        assert_eq!(feed.audio_window(), sharp, "a plain read asks for nothing");
+        let fast_re = AudioAnalysis {
+            win: spectrum::WindowN::Fast,
+            reassign: true,
+        };
+        feed.audio_row_with(Some(fast_re), RowSmoothing::Live);
+        assert_eq!(feed.audio_window(), fast_re);
+    }
+
+    /// Turning reassignment on is a different analysis, so it opens a fresh average as a window
+    /// change does: one drawn row never blends a reassigned frame with a plain one.
+    #[test]
+    fn a_reassign_change_restarts_the_audio_average() {
+        let feed = SpectrumFeed::default();
+        feed.publish_audio_at(audio(vec![0.9]), AudioAnalysis::default());
+        let re = AudioAnalysis {
+            reassign: true,
+            ..AudioAnalysis::default()
+        };
+        feed.publish_audio_at(audio(vec![0.1]), re);
+        assert_eq!(feed.audio_frames_pending_for_test(), 1);
     }
 
     #[test]

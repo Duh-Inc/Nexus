@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { clampLook, dssLookOf, LOOK_DEFAULTS, LOOK_RIG, MIN_ROW_MS, rowMsAt, sameLook } from './waterfallLook'
+import { clampLook, contrastCurveOf, dssLookOf, LOOK_CRISP, LOOK_DEFAULTS, LOOK_RIG, MIN_ROW_MS, rowMsAt, sameLook } from './waterfallLook'
 import { DSS_LOOK_DEFAULT } from './dss'
 
 describe('waterfallLook', () => {
@@ -28,9 +28,29 @@ describe('waterfallLook', () => {
     }
   })
 
+  it('puts Crisp between the default and Rig: different from both, and still averaged', () => {
+    expect(sameLook(LOOK_CRISP, LOOK_DEFAULTS)).toBe(false)
+    expect(sameLook(LOOK_CRISP, LOOK_RIG)).toBe(false)
+    expect(LOOK_CRISP.smoothing).not.toBe('live')
+    expect(LOOK_CRISP.edges).toBe('soft')
+  })
+
+  it('draws linear contrast through the host curve alone, and composes a steeper one after it', () => {
+    const host = (t: number) => t * 0.5
+    expect(contrastCurveOf('linear')).toBeUndefined()
+    expect(contrastCurveOf('linear', host)).toBe(host)
+    const med = contrastCurveOf('medium')!
+    const high = contrastCurveOf('high')!
+    // Steeper keeps the low end darker, and both keep the ends fixed.
+    expect(high(0.3)).toBeLessThan(med(0.3))
+    expect(med(0.3)).toBeLessThan(0.3)
+    expect([med(0), med(1), high(0), high(1)]).toEqual([0, 1, 0, 1])
+    expect(contrastCurveOf('medium', host)!(0.8)).toBeCloseTo(med(0.4), 12)
+  })
+
   it('maps the default look to the shipped 3-D look, and the rig preset to spikes with no filter', () => {
     expect(dssLookOf({ ...LOOK_DEFAULTS })).toEqual(DSS_LOOK_DEFAULT)
-    expect(dssLookOf({ ...LOOK_RIG })).toEqual({ style: 'spikes', impulse: false, detail: 'pixel' })
+    expect(dssLookOf({ ...LOOK_RIG })).toEqual({ style: 'spikes', impulse: false, detail: 'pixel', height: 'suppress' })
     expect(clampLook({ style3d: 'cubes', impulse3d: true, detail3d: 'pixel' })).toEqual({ ...LOOK_DEFAULTS, detail3d: 'pixel' })
   })
 })

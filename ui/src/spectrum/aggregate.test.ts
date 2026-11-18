@@ -91,6 +91,22 @@ describe('aggregateRow', () => {
     expect(lin.some((v) => v > 0.2 + 1e-6 && v < 0.6 - 1e-6)).toBe(true)
   })
 
+  it('draws soft between linear and nearest: flat over most of a bin, a short blend at the edge', () => {
+    const row = [0.2, 0.6]
+    const fill = (i: 'linear' | 'soft' | 'nearest') => {
+      const o = new Float32Array(40)
+      aggregateRow(row, 0, 2, 0, 2, 0, 2, o, 'peak', 120, i)
+      return Array.from(o)
+    }
+    const [lin, soft, near] = [fill('linear'), fill('soft'), fill('nearest')]
+    const between = (v: number) => v > 0.2 + 1e-6 && v < 0.6 - 1e-6
+    const blended = (a: number[]) => a.filter(between).length
+    // Fewer blended pixels than linear, more than none (nearest's), and never outside the two bins.
+    expect(blended(soft)).toBeGreaterThan(blended(near))
+    expect(blended(soft)).toBeLessThan(blended(lin))
+    expect(soft.every((v) => v >= 0.2 - 1e-6 && v <= 0.6 + 1e-6)).toBe(true)
+  })
+
   it('defaults to linear, so a caller that never names a fill draws what it always drew', () => {
     const r = prng(3)
     const row = Array.from({ length: 64 }, () => r())

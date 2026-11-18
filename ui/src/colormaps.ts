@@ -22,6 +22,8 @@ export type ColormapName =
   | 'digipan'
   | 'linrad'
   | 'negative'
+  | 'violet-red'
+  | 'scope-blue'
 
 export const DEFAULT_COLORMAP: ColormapName = 'inferno'
 /** Luminance-monotonic sequential maps (safe for magnitude). turbo is NOT. */
@@ -64,6 +66,14 @@ const STOPS: Record<ColormapName, string[]> = {
   digipan: ['#000020', '#000080', '#0040c0', '#00b0b0', '#30d030', '#e0e000', '#ff6000', '#ffffff'],
   linrad: ['#000000', '#000060', '#0030b0', '#00b0a0', '#30d030', '#e0e000', '#ff4000', '#ffffff'],
   negative: ['#ffffff', '#cccccc', '#999999', '#666666', '#333333', '#000000'],
+  // The two rig-scope looks (operator request 2026-11-18). VIOLET-RED is the 3-D stack palette of
+  // the current crop of rigs: a long black floor (turbo's dark-run reasoning: the parked noise
+  // grain must land in near-black), then deep blue → violet → magenta → red, tips near white.
+  // SCOPE-BLUE is the classic rig waterfall: the noise floor visibly BLUE rather than black, so the
+  // band reads as alive, signals running cyan → yellow → red. Neither is luminance-monotonic at the
+  // very top, so neither is in SEQUENTIAL.
+  'violet-red': ['#000000', '#04051a', '#0c1250', '#1b2fa8', '#4a3ad8', '#8c3ae0', '#cf34b4', '#f8305a', '#ff7a4a', '#fff1e6'],
+  'scope-blue': ['#00000c', '#000c3c', '#00226e', '#063ea6', '#1a6ad8', '#28b4ee', '#e8ee30', '#ffb000', '#ff5200', '#dc0000'],
 }
 
 function hexToRgb(hex: string): [number, number, number] {

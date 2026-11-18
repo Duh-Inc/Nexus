@@ -5879,10 +5879,12 @@ export function subscribeSnapshot(fn: (snap: AppSnapshot) => void): () => void {
 export interface SpectrumRowLook {
   window?: ScopeWindow
   smoothing?: 'average' | 'peak' | 'live'
+  /** `reassign` moves each bin's energy to the frequency it is actually at (rxdsp). */
+  sharpen?: 'off' | 'reassign'
 }
 
 export async function getSpectrumRow(_transmitting: boolean, look?: SpectrumRowLook): Promise<Spectrum> {
-  return look ? invoke<Spectrum>('get_spectrum_row', { window: look.window, smoothing: look.smoothing }) : invoke<Spectrum>('get_spectrum_row')
+  return look ? invoke<Spectrum>('get_spectrum_row', { window: look.window, smoothing: look.smoothing, sharpen: look.sharpen }) : invoke<Spectrum>('get_spectrum_row')
 }
 
 /**

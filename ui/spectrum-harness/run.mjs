@@ -595,13 +595,14 @@ const RENDER_FIXTURES = [
   'scope-wide-average',
   'dss-two-tone',
   'dss-two-tone-spikes',
+  'dss-two-tone-calm',
 ]
 /** Fixtures checked only backend against backend, with no stored picture (see the loop). */
-const CROSS_ONLY = ['wf-uhf', 'wf-retune-nearest']
+const CROSS_ONLY = ['wf-uhf', 'wf-retune-nearest', 'wf-retune-soft']
 /** A cross-only fixture that must NOT draw what a stored fixture draws: [fixture, the one it varies]. */
-const MUST_DIFFER = { 'wf-retune-nearest': 'wf-retune' }
+const MUST_DIFFER = { 'wf-retune-nearest': ['wf-retune'], 'wf-retune-soft': ['wf-retune', 'wf-retune-nearest'] }
 /** Stored fixtures that must not draw what another stored fixture draws, on each backend. */
-const STORED_MUST_DIFFER = { 'dss-two-tone-spikes': 'dss-two-tone' }
+const STORED_MUST_DIFFER = { 'dss-two-tone-spikes': 'dss-two-tone', 'dss-two-tone-calm': 'dss-two-tone-spikes' }
 const RENDER_BACKENDS = ['webgl2', 'canvas2d']
 const RENDER_BASELINES = join(BASELINES, 'renderer')
 const EXACT = { channel: 0, maxFraction: 0 }
@@ -705,12 +706,19 @@ async function renderChecks(cdp, base, backend) {
     const cmp = comparePixels(a, b)
     record({ kind: 'render-cross', id: fx, outcome: cmp.match ? 'pass' : 'fail', detail: cmp.reason || pct(cmp), differing: cmp.differing, maxDelta: cmp.maxDelta })
     line('BOTH', `webgl2 vs canvas2d: ${fx}`, pct(cmp), cmp.match ? 'agree' : `FAIL (${cmp.reason})`)
-    // The control: a setting both backends ignored would agree trivially. Each must draw something
-    // other than the fixture it varies.
-    const other = MUST_DIFFER[fx]
-    if (other) {
-      for (const [be, mine] of [['webgl2', a], ['canvas2d', b]]) {
-        const same = comparePixels(mine, drawn[`${be}-${other}`])
+    // Kept, so a later cross-only fixture can be held apart from this one too.
+    drawn[`webgl2-${fx}`] = a
+    drawn[`canvas2d-${fx}`] = b
+  }
+  // The control: a setting both backends ignored would agree trivially. Each cross-only fixture must
+  // draw something other than every fixture it varies, on each backend.
+  for (const [fx, others] of Object.entries(MUST_DIFFER)) {
+    for (const other of others) {
+      for (const be of RENDER_BACKENDS) {
+        const mine = drawn[`${be}-${fx}`]
+        const theirs = drawn[`${be}-${other}`]
+        if (!mine || !theirs) throw new Error(`MUST_DIFFER: no picture for ${be} ${!mine ? fx : other}`)
+        const same = comparePixels(mine, theirs)
         const id = `${fx} vs ${other} (${be})`
         record({ kind: 'render-control', id, outcome: same.match ? 'fail' : 'pass', detail: same.match ? 'identical: the setting did not reach the pixels' : pct(same) })
         line('CONTROL', id, pct(same), same.match ? 'FAIL (no difference)' : 'differs, as it must')

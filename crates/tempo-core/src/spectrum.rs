@@ -312,6 +312,132 @@ pub fn power_spectrum_n(
     out
 }
 
+/// The derivative of [`hann`] with respect to the sample index, for the reassignment FFT.
+fn hann_deriv(i: usize, n: usize) -> f32 {
+    let m = n as f32 - 1.0;
+    std::f32::consts::PI / m * (2.0 * std::f32::consts::PI * i as f32 / m).sin()
+}
+
+std::thread_local! {
+    /// The reassignment FFT's input, beside [`FFT_SCRATCH`] so the two transforms of one frame
+    /// never share a buffer.
+    static FFT_SCRATCH_D: std::cell::RefCell<[f32; MAX_FFT_N]> = const { std::cell::RefCell::new([0.0; MAX_FFT_N]) };
+}
+
+/// How far, in raw bins, reassignment may move a bin's energy before the estimate is treated as
+/// noise and the energy stays on its own bin. A tone's Hann main lobe spans ±2 raw bins, so its
+/// true frequency is always within 1.5 bins of every bin that carries real lobe energy; a larger
+/// correction comes from a bin whose phase is noise.
+const REASSIGN_MAX_BINS: f32 = 1.5;
+
+/// The plain spectrum, scaled by this, is the floor under the reassigned one (−10 dB). See
+/// [`power_spectrum_reassigned`].
+const REASSIGN_BED: f32 = 0.1;
+
+/// [`power_spectrum_n`] with FREQUENCY REASSIGNMENT: every raw bin's power is moved to the frequency
+/// the signal in it is actually at, then summed into the display bin there.
+///
+/// WHY. A plain FFT draws a steady tone as its window's main lobe: three to four raw bins at the
+/// `Sharp` window, ~12 Hz. A longer window narrows the lobe only by smearing time, and FT8's
+/// 160 ms symbols cannot afford more smear. Reassignment narrows it without touching the window:
+/// the bins of one lobe all report the same instantaneous frequency, so their energy collapses onto
+/// one display bin. Noise reports random frequencies, so it stays scattered.
+///
+/// HOW. The instantaneous frequency of bin `k` is `f_k − (sr / 2π) · Im(X_dh · conj(X_h)) / |X_h|²`,
+/// where `X_h` is the Hann-windowed transform and `X_dh` the transform under the derivative of the
+/// Hann window (Auger & Flandrin 1995). The sign is pinned by
+/// `reassignment_finds_a_tone_between_bins`. A correction beyond [`REASSIGN_MAX_BINS`] is noise and
+/// leaves the energy on its own bin.
+///
+/// THE FLOOR. Reassignment leaves display bins with nothing in them, which would draw as black
+/// holes and drag the waterfall's noise-median black point down. So each display bin is the larger
+/// of the reassigned sum and the plain spectrum at [`REASSIGN_BED`]: a tone's skirts drop 10 dB
+/// below its core instead of vanishing, and an empty bin still shows the noise that is there.
+///
+/// Same axis, same span and bin rule, same front end ([`with_rfft`]) as `power_spectrum_n`. Display
+/// only; nothing that decodes reads it.
+pub fn power_spectrum_reassigned(
+    samples: &[f32],
+    sr: f32,
+    f_lo: f32,
+    f_hi: f32,
+    bins: usize,
+    win: WindowN,
+) -> Vec<f32> {
+    if bins == 0 {
+        return Vec::new();
+    }
+    let fft_n = win.n();
+    let plain = power_spectrum_n(samples, sr, f_lo, f_hi, bins, win);
+    let hz_per_bin = sr / fft_n as f32;
+    let k_max = (fft_n / 2 - 1) as isize;
+    let span = f_hi - f_lo;
+    let two_pi = 2.0 * std::f32::consts::PI;
+    let mut acc = with_rfft(samples, win, |spec| {
+        FFT_SCRATCH_D.with(|sc| {
+            let mut buf = sc.borrow_mut();
+            // The same load and DC removal as `with_rfft`, under the derivative window.
+            let n = samples.len().min(fft_n);
+            let pad = fft_n - n;
+            for v in buf[..pad].iter_mut() {
+                *v = 0.0;
+            }
+            let src = &samples[samples.len() - n..];
+            let mean = if n > 0 {
+                src.iter().sum::<f32>() / n as f32
+            } else {
+                0.0
+            };
+            for i in 0..n {
+                buf[pad + i] = (src[i] - mean) * hann_deriv(pad + i, fft_n);
+            }
+            let dspec: &mut [microfft::Complex32] = match win {
+                WindowN::Fast => microfft::real::rfft_1024(
+                    (&mut buf[..1024]).try_into().expect("scratch covers 1024"),
+                ),
+                WindowN::Balanced => microfft::real::rfft_2048(
+                    (&mut buf[..2048]).try_into().expect("scratch covers 2048"),
+                ),
+                WindowN::Sharp => microfft::real::rfft_4096(
+                    (&mut buf[..4096]).try_into().expect("scratch covers 4096"),
+                ),
+            };
+            let mut acc = vec![0.0f32; bins];
+            for k in 1..=k_max {
+                let fk = k as f32 * hz_per_bin;
+                let h = spec[k as usize];
+                let d = dspec[k as usize];
+                let p = h.re * h.re + h.im * h.im;
+                if p <= 0.0 {
+                    continue;
+                }
+                // Im(X_dh · conj(X_h)) / |X_h|², in radians per sample → Hz.
+                let im = d.im * h.re - d.re * h.im;
+                let shift = im / p * sr / two_pi;
+                let f = if shift.abs() <= REASSIGN_MAX_BINS * hz_per_bin {
+                    fk - shift
+                } else {
+                    fk
+                };
+                if f < f_lo || f >= f_hi {
+                    continue;
+                }
+                let i = (((f - f_lo) / span) * bins as f32) as usize;
+                if i < bins {
+                    acc[i] += p;
+                }
+            }
+            acc
+        })
+    });
+    let bed = power_to_display(REASSIGN_BED) - 1.0;
+    for (a, &pl) in acc.iter_mut().zip(&plain) {
+        let r = db_display(*a, fft_n);
+        *a = if pl + bed > r { (pl + bed).max(0.0) } else { r };
+    }
+    acc
+}
+
 /// Power a FULL-SCALE COMPLEX tone (`|I + jQ| = 1`, on its own bin) deposits in that bin under the
 /// Hann window: all of it lands in the one bin, `N·CG = N/2`, so `p = (N/2)²`. Four times a real
 /// sine's [`full_scale_power`], which the real FFT splits between `+f` and `−f`.
@@ -938,6 +1064,103 @@ mod tests {
     ///
     /// The scatter form assigns each raw bin to the ONE display bin containing its centre, so a
     /// carrier reads as a peak with true -6 dB Hann shoulders.
+    /// Width, in Hz, of the run of display bins within 6 dB of the row's peak.
+    fn width_6db(row: &[f32], f_lo: f32, f_hi: f32) -> f32 {
+        let pk = row
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .unwrap()
+            .0;
+        let thr = row[pk] - 6.0 / DB_SPAN;
+        let lo = (0..=pk)
+            .rev()
+            .take_while(|&i| row[i] >= thr)
+            .last()
+            .unwrap();
+        let hi = (pk..row.len())
+            .take_while(|&i| row[i] >= thr)
+            .last()
+            .unwrap();
+        (hi - lo + 1) as f32 * (f_hi - f_lo) / row.len() as f32
+    }
+
+    fn peak_hz(row: &[f32], f_lo: f32, f_hi: f32) -> f32 {
+        let pk = row
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .unwrap()
+            .0;
+        f_lo + (pk as f32 + 0.5) * (f_hi - f_lo) / row.len() as f32
+    }
+
+    /// THE SIGN, and the point of it. A tone off its raw-bin centre by a fraction of a bin, either
+    /// way: the reassigned peak, on a display grid far finer than the raw one, must land on the
+    /// tone itself. A sign error moves energy AWAY from the tone, landing it about one raw bin off
+    /// (2·f_k − f for the strongest bin), so a 0.15-bin tolerance cannot pass with it.
+    #[test]
+    fn reassignment_finds_a_tone_between_bins() {
+        let sr = 12_000.0;
+        let hz_per_bin = sr / 4096.0;
+        for frac in [0.37f32, -0.41] {
+            let f = (512.0 + frac) * hz_per_bin;
+            let s = tone(f, sr, 4096);
+            let (lo, hi) = (f - 40.0, f + 40.0);
+            let re = power_spectrum_reassigned(&s, sr, lo, hi, 800, WindowN::Sharp);
+            let er = (peak_hz(&re, lo, hi) - f).abs();
+            assert!(
+                er < 0.15 * hz_per_bin,
+                "tone {frac:+} bin off centre: reassigned peak {er:.2} Hz off"
+            );
+        }
+    }
+
+    /// A steady tone draws narrower: the lobe's energy collapses onto the bin at its frequency.
+    #[test]
+    fn reassignment_narrows_a_tone() {
+        let sr = 12_000.0;
+        let s = tone(1503.3, sr, 4096);
+        // The waterfall's Sharp row: 1280 bins over 0-5000 Hz.
+        let plain = power_spectrum_n(&s, sr, 0.0, 5000.0, 1280, WindowN::Sharp);
+        let re = power_spectrum_reassigned(&s, sr, 0.0, 5000.0, 1280, WindowN::Sharp);
+        let (wp, wr) = (width_6db(&plain, 0.0, 5000.0), width_6db(&re, 0.0, 5000.0));
+        assert!(
+            wp >= 7.0,
+            "control: the plain lobe spans several display bins ({wp:.1} Hz)"
+        );
+        assert!(
+            wr <= wp / 2.0,
+            "reassigned -6 dB width {wr:.1} Hz, plain {wp:.1} Hz"
+        );
+    }
+
+    /// Noise keeps its level: the waterfall parks its black point on the row's median, so a
+    /// reassigned row whose noise read far lower or higher would re-colour the whole band.
+    #[test]
+    fn reassignment_keeps_the_noise_median_near_the_plain_one() {
+        let sr = 12_000.0;
+        // Deterministic white noise (xorshift), 0.01 rms-ish.
+        let mut x: u32 = 0x9E37_79B9;
+        let s: Vec<f32> = (0..4096)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                (x as f32 / u32::MAX as f32 - 0.5) * 0.02
+            })
+            .collect();
+        let med = |r: &[f32]| {
+            let mut v = r.to_vec();
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            v[v.len() / 2]
+        };
+        let plain = power_spectrum_n(&s, sr, 0.0, 5000.0, 1280, WindowN::Sharp);
+        let re = power_spectrum_reassigned(&s, sr, 0.0, 5000.0, 1280, WindowN::Sharp);
+        let d_db = (med(&re) - med(&plain)) * DB_SPAN;
+        assert!(d_db.abs() < 4.0, "noise median moved {d_db:.1} dB");
+    }
+
     #[test]
     fn a_carrier_is_one_display_bin_not_a_plateau() {
         let sr = 12_000.0;

@@ -23,6 +23,9 @@
 
 import type { Detector, Interpolation } from './types'
 
+/** The width, as a fraction of a bin, of the blend `soft` keeps around each bin boundary. */
+export const SOFT_RAMP = 0.35
+
 /** log2(10) / 10: turns a dB number into log2 of its power ratio. */
 const LOG2_10_OVER_10 = Math.LOG2E * Math.LN10 / 10
 
@@ -63,6 +66,7 @@ export function aggregateRow(
   const k = dbPerUnit * LOG2_10_OVER_10
   const average = detector === 'average'
   const nearest = interp === 'nearest'
+  const soft = interp === 'soft'
   for (let x = 0; x < outW; x++) {
     const fLo = viewLoHz + x * pxHz
     const fMid = fLo + pxHz * 0.5
@@ -101,10 +105,22 @@ export function aggregateRow(
       else if (t > n - 1) t = n - 1
       const b0 = Math.floor(t)
       const b1 = b0 + 1 < n ? b0 + 1 : n - 1
-      const frac = t - b0
+      let frac = t - b0
+      // SOFT: flat over most of each bin, a blend only within SOFT_RAMP of the boundary halfway
+      // between two centres (frac 0.5). A remap of the same blend weight, so it never leaves the
+      // range of the two bins it mixes.
+      if (soft) {
+        frac = (frac - 0.5) / SOFT_RAMP + 0.5
+        frac = frac < 0 ? 0 : frac > 1 ? 1 : frac
+      }
       out[x] = src[at + b0] * (1 - frac) + src[at + b1] * frac
     }
   }
+}
+
+/** The int a shader takes for an `Interpolation` (see `GLSL_AGGREGATE`). */
+export function interpCode(i: Interpolation | undefined): number {
+  return i === 'nearest' ? 1 : i === 'soft' ? 2 : 0
 }
 
 /** A value's palette index (0..255) in a display range: `normalize`, then the components'
@@ -134,11 +150,13 @@ export function safeDbPerUnit(d: number): number {
  * Returns false where `aggregateRow` writes NaN.
  *
  * The two mode flags are ints because a uniform cannot be a string: `detector` is 1 for `average`
- * and 0 for `peak`, `interp` is 1 for `nearest` and 0 for `linear`. Only one of them is ever read
+ * and 0 for `peak`, `interp` is 0 for `linear`, 1 for `nearest` and 2 for `soft`
+ * (`interpCode`). Only one of them is ever read
  * per pixel — they belong to the two regimes.
  */
 export const GLSL_AGGREGATE = /* glsl */ `
 const float LOG2_10_OVER_10 = ${LOG2_10_OVER_10.toFixed(17)};
+const float SOFT_RAMP = ${SOFT_RAMP.toFixed(6)};
 
 bool aggregateRow(sampler2D src, int row, int n, float rowLo, float rowHi, float viewLo,
                   float pxHz, float x, int detector, float dbPerUnit, int interp, out float v) {
@@ -173,6 +191,7 @@ bool aggregateRow(sampler2D src, int row, int n, float rowLo, float rowHi, float
     int b0 = int(floor(t));
     int b1 = min(b0 + 1, n - 1);
     float f = t - float(b0);
+    if (interp == 2) f = clamp((f - 0.5) / SOFT_RAMP + 0.5, 0.0, 1.0);
     v = texelFetch(src, ivec2(b0, row), 0).r * (1.0 - f) + texelFetch(src, ivec2(b1, row), 0).r * f;
   }
   return true;

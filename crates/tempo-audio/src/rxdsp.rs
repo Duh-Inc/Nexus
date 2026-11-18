@@ -30,7 +30,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tempo_app::dto::Spectrum;
-use tempo_app::engine::{MeterFeed, SpectrumFeed, SPECTRUM_BINS, SPECTRUM_HI_HZ};
+use tempo_app::engine::{AudioAnalysis, MeterFeed, SpectrumFeed, SPECTRUM_BINS, SPECTRUM_HI_HZ};
 use tempo_core::spectrum::{HiDefZoom, ScopeAnalysis, WindowN};
 
 use crate::capture_resample::CaptureResampler;
@@ -457,11 +457,37 @@ fn compute_row(audio: &[f32]) -> Spectrum {
 /// raw grid is already coarser than the display's, and the nearest-bin fill covers that regime.
 /// Cost at `Sharp`: one 4096-point FFT instead of a 2048 (~30 us more per 20 ms tick) and 2.5 KB
 /// more per drawn row, only while a waterfall asks for it.
-fn compute_row_at(audio: &[f32], win: WindowN) -> Spectrum {
-    if win == WindowN::Balanced {
+///
+/// REASSIGN (the strip's Sharpen) swaps the estimator for
+/// `tempo_core::spectrum::power_spectrum_reassigned` at the same window and bin count: each bin's
+/// energy moved to the frequency it is actually at, so a steady tone collapses toward one bin. It
+/// costs one more FFT of the same length per tick, only while asked for.
+fn compute_row_at(audio: &[f32], a: AudioAnalysis) -> Spectrum {
+    if a == AudioAnalysis::default() {
         return compute_row(audio);
     }
-    row_over(audio, 0.0, SPECTRUM_HI_HZ, audio_row_bins(win), win)
+    let bins = audio_row_bins(a.win);
+    if !a.reassign {
+        return row_over(audio, 0.0, SPECTRUM_HI_HZ, bins, a.win);
+    }
+    let row = if audio.is_empty() {
+        Vec::new()
+    } else {
+        tempo_core::spectrum::power_spectrum_reassigned(
+            audio,
+            ANALYSIS_RATE,
+            0.0,
+            SPECTRUM_HI_HZ,
+            bins,
+            a.win,
+        )
+    };
+    Spectrum {
+        row,
+        lo_hz: 0.0,
+        hi_hz: f64::from(SPECTRUM_HI_HZ),
+        source: "audio".into(),
+    }
 }
 
 /// Display bins in the audio row at `win` — see [`compute_row_at`].
@@ -1331,7 +1357,7 @@ mod tests {
     fn the_balanced_row_at_a_window_is_the_shipped_row() {
         let audio = tone(ANALYSIS_RATE_HZ, 1234.0, MAX_WINDOW);
         let a = compute_row(&audio);
-        let b = compute_row_at(&audio, WindowN::Balanced);
+        let b = compute_row_at(&audio, AudioAnalysis::at(WindowN::Balanced));
         assert_eq!(a.row, b.row);
         assert_eq!((a.lo_hz, a.hi_hz), (b.lo_hz, b.hi_hz));
     }
@@ -1341,9 +1367,9 @@ mod tests {
     #[test]
     fn a_sharp_row_draws_a_carrier_narrower_than_the_shipped_one() {
         let audio = tone(ANALYSIS_RATE_HZ, 1500.0, MAX_WINDOW);
-        let fast = compute_row_at(&audio, WindowN::Fast);
-        let bal = compute_row_at(&audio, WindowN::Balanced);
-        let sharp = compute_row_at(&audio, WindowN::Sharp);
+        let fast = compute_row_at(&audio, AudioAnalysis::at(WindowN::Fast));
+        let bal = compute_row_at(&audio, AudioAnalysis::at(WindowN::Balanced));
+        let sharp = compute_row_at(&audio, AudioAnalysis::at(WindowN::Sharp));
         assert_eq!(fast.row.len(), SPECTRUM_BINS);
         assert_eq!(bal.row.len(), SPECTRUM_BINS);
         assert_eq!(
@@ -1356,6 +1382,29 @@ mod tests {
         assert!(
             ws < wb && wb < wf,
             "-6 dB widths: fast {wf} Hz, balanced {wb} Hz, sharp {ws} Hz"
+        );
+    }
+
+    /// Sharpen: the reassigned Sharp row draws a carrier narrower than the plain Sharp row, at the
+    /// same bin count.
+    #[test]
+    fn a_reassigned_row_draws_a_carrier_narrower_than_the_plain_sharp_one() {
+        let audio = tone(ANALYSIS_RATE_HZ, 1503.3, MAX_WINDOW);
+        let plain = compute_row_at(&audio, AudioAnalysis::at(WindowN::Sharp));
+        let re = compute_row_at(
+            &audio,
+            AudioAnalysis {
+                win: WindowN::Sharp,
+                reassign: true,
+            },
+        );
+        assert_eq!(plain.row.len(), re.row.len());
+        let w = |r: &Spectrum| width_6db_hz(&r.row, r.lo_hz, r.hi_hz);
+        assert!(
+            w(&re) < w(&plain),
+            "reassigned {} Hz, plain {} Hz",
+            w(&re),
+            w(&plain)
         );
     }
 
@@ -1372,7 +1421,7 @@ mod tests {
         ring.push_slice(&tone(ANALYSIS_RATE_HZ, 1000.0, MAX_WINDOW));
         assert!(dsp.tick(&tap, &feed, &meters));
         assert_eq!(
-            feed.audio_row_with(Some(WindowN::Sharp), smooth)
+            feed.audio_row_with(Some(AudioAnalysis::at(WindowN::Sharp)), smooth)
                 .unwrap()
                 .row
                 .len(),

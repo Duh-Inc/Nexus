@@ -28523,6 +28523,19 @@ button.sat-chip:disabled {
   flex: 0 0 auto;
   padding: var(--space-1) var(--space-2);
 }
+/* One labelled group of chips; the groups wrap as units, so a label never strands at a line end
+   apart from its choices. */
+.wf-look > .wf-look-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  white-space: nowrap;
+}
+.wf-look-name {
+  color: var(--text-dim);
+  font-size: 0.85em;
+  margin-right: 2px;
+}
 /* Scroll-direction toggle — a worded button, so it must not be squeezed to an ellipsis in the
    narrow docked header (the header wraps instead; see .waterfall-wrap > .panel-header). */
 .wf-flow {

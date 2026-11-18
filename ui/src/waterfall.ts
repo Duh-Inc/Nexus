@@ -1320,6 +1320,8 @@ export const WATERFALL_PALETTES: { value: ColormapName | 'auto'; label: string }
   { value: 'digipan', label: 'Digipan' },
   { value: 'linrad', label: 'Linrad' },
   { value: 'negative', label: 'Negative' },
+  { value: 'violet-red', label: 'Violet Red' },
+  { value: 'scope-blue', label: 'Scope Blue' },
 ]
 
 /** The curated MASTER palette set shown in the per-mode pickers — one clean choice of ~8
@@ -1341,6 +1343,8 @@ export const MASTER_PALETTES: { value: ColormapName | 'auto'; label: string; lab
   { value: 'amber-crt', label: 'Amber CRT' },
   { value: 'blue', label: 'Blue' },
   { value: 'grayscale', label: 'Grayscale' },
+  { value: 'violet-red', label: 'Violet Red' },
+  { value: 'scope-blue', label: 'Scope Blue' },
 ]
 
 /** Resolve the waterfall colormap: an explicit palette choice wins; `'auto'` (or an

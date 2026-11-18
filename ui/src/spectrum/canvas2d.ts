@@ -13,7 +13,7 @@
 // The canvas is never read back (no willReadFrequently), so the browser may keep it on the GPU.
 
 import { aggregateRow, lutIndex, safeDbPerUnit, strengthIn } from './aggregate'
-import { DSS_COLS, DSS_LOOK_DEFAULT, DSS_MAX_GL_COLS, DSS_ROWS, drawDss2d, drawDssSpikes2d, dssStrengths } from './dss'
+import { DSS_COLS, DSS_HEIGHT_CURVE, DSS_LOOK_DEFAULT, DSS_MAX_GL_COLS, DSS_ROWS, drawDss2d, drawDssSpikes2d, dssStrengths } from './dss'
 import { M_CEIL, M_DB_PER_UNIT, M_FLOOR, M_HI, M_LO, M_N, META, type SpectrumRing } from './ring'
 import type { Backend, Detector, Interpolation, SpectrumLayout, SpectrumScene } from './types'
 
@@ -109,7 +109,7 @@ export class Canvas2dBackend implements Backend {
       this.bandKey = null
       const { generation, serial } = this.ring
       const look = scene.dssLook ?? DSS_LOOK_DEFAULT
-      const key = `${generation}:${serial}:${scene.offsetRows}:${scene.view.loHz}:${scene.view.hiHz}:${scene.detector}:${scene.interpolation ?? 'linear'}:${look.style}:${look.impulse}:${look.detail}:${w}:${plotH}`
+      const key = `${generation}:${serial}:${scene.offsetRows}:${scene.view.loHz}:${scene.view.hiHz}:${scene.detector}:${scene.interpolation ?? 'linear'}:${look.style}:${look.impulse}:${look.detail}:${look.height ?? 'lift'}:${w}:${plotH}`
       if (key === this.dssKey && lut === this.dssLut) return
       this.dssKey = key
       this.dssLut = lut
@@ -120,12 +120,13 @@ export class Canvas2dBackend implements Backend {
       const cols = look.detail === 'pixel' ? Math.max(2, Math.min(w, DSS_MAX_GL_COLS)) : DSS_COLS
       if (this.dssField.length < DSS_ROWS * cols) this.dssField = new Float32Array(DSS_ROWS * cols)
       const rows = dssStrengths(this.ring, cols, scene.view, offset, scene.detector, this.dssField, this.dssPresent, scene.interpolation, look.impulse)
+      const zCurve = DSS_HEIGHT_CURVE[look.height ?? 'lift']
       if (look.style === 'spikes') {
         if (plotH <= 0) return
         if (!this.dssImg || this.dssImg.width !== w || this.dssImg.height !== plotH) this.dssImg = new ImageData(w, plotH)
-        drawDssSpikes2d(ctx, this.dssImg, this.dssField, this.dssPresent, rows, cols, lut)
+        drawDssSpikes2d(ctx, this.dssImg, this.dssField, this.dssPresent, rows, cols, lut, zCurve)
       } else {
-        drawDss2d(ctx, w, plotH, this.dssField, this.dssPresent, rows, cols, lut)
+        drawDss2d(ctx, w, plotH, this.dssField, this.dssPresent, rows, cols, lut, zCurve)
       }
       return
     }

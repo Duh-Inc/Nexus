@@ -28,9 +28,9 @@ interface Fixture {
   mode: '2d' | 'dss'
   detector: 'peak' | 'average'
   /** How a bin wider than a pixel is filled; absent = `linear`, the shipped fill. */
-  interpolation?: 'linear' | 'nearest'
+  interpolation?: 'linear' | 'soft' | 'nearest'
   /** The 3-D look; absent = the shipped ridge surface. */
-  dssLook?: { style: 'ridge' | 'spikes'; impulse: boolean; detail: 'fixed' | 'pixel' }
+  dssLook?: { style: 'ridge' | 'spikes'; impulse: boolean; detail: 'fixed' | 'pixel'; height?: 'lift' | 'linear' | 'suppress' }
   view?: [number, number]
   newestAtTop?: boolean
   offsetRows?: number
@@ -50,6 +50,8 @@ export const FIXTURES: Record<string, Fixture> = {
   // stored picture: the two backends must agree on it (aggregate.ts's branch and its GLSL twin),
   // and each must DIFFER from its own `wf-retune`, or the setting never reached the pixels and the
   // agreement proves nothing.
+  // The ⚙ strip's middle fill: both backends agree, and it differs from both neighbours.
+  'wf-retune-soft': { set: 'retune', w: 320, h: 160, traceH: 0, stripH: 18, mode: '2d', detector: 'peak', interpolation: 'soft', view: [1200, 3200] },
   'wf-retune-nearest': { set: 'retune', w: 320, h: 160, traceH: 0, stripH: 18, mode: '2d', detector: 'peak', interpolation: 'nearest', view: [1200, 3200] },
   // Scrollback with the flow flipped: newest at the top, 30 rows back.
   'wf-scrollback': { set: 'two-tone', w: 320, h: 160, traceH: 0, stripH: 18, mode: '2d', detector: 'peak', newestAtTop: true, offsetRows: 30 },
@@ -61,6 +63,9 @@ export const FIXTURES: Record<string, Fixture> = {
   'dss-two-tone-spikes': { set: 'two-tone', w: 320, h: 192, traceH: 0, stripH: 0, mode: 'dss', detector: 'peak', dssLook: { style: 'spikes', impulse: true, detail: 'pixel' } },
   // The same with the burst filter off: run.mjs feeds it the one-row burst, which must SHOW here
   // (and not with the filter on), on both backends.
+  // Spikes with the Calm height curve: the noise pressed to a carpet. Stored, and must differ from
+  // the Lift spikes it varies.
+  'dss-two-tone-calm': { set: 'two-tone', w: 320, h: 192, traceH: 0, stripH: 0, mode: 'dss', detector: 'peak', dssLook: { style: 'spikes', impulse: true, detail: 'pixel', height: 'suppress' } },
   'dss-spikes-raw': { set: 'two-tone', w: 320, h: 192, traceH: 0, stripH: 0, mode: 'dss', detector: 'peak', dssLook: { style: 'spikes', impulse: false, detail: 'pixel' } },
   // Zoomed inside a 23 cm scope's span after the history began on audio: WebGL2's float32 hertz
   // stay exact only because it re-bases on the newest rows. No stored picture: canvas-2D, which

@@ -18338,6 +18338,7 @@ async fn get_space_wx_scales(
 
 /// One waterfall row (Goertzel power spectrum of the last received frame).
 ///
+/// `sharpen: "reassign"` asks for the frequency-reassigned row (see `compute_row_at` in rxdsp).
 /// `window` and `smoothing` are the digital waterfall's ⚙ strip: the analysis window it asks the
 /// producer to run (`"fast"`, `"balanced"`, `"sharp"`) and which reading of the averaging window
 /// it draws (`"average"`, `"peak"`, `"live"`). Both are optional and an unknown tag is the default,
@@ -18348,12 +18349,20 @@ async fn get_space_wx_scales(
 fn get_spectrum_row(
     window: Option<String>,
     smoothing: Option<String>,
+    sharpen: Option<String>,
     feed: State<'_, tempo_app::engine::SpectrumFeed>,
     state: State<'_, SharedEngine>,
 ) -> Result<Spectrum, String> {
+    // The analysis request: the window, and whether to reassign (`sharpen: "reassign"`). Asking
+    // for neither asks for nothing, so a read without either leaves a standing request alone.
     let win = window
         .as_deref()
         .and_then(tempo_core::spectrum::WindowN::from_tag);
+    let reassign = sharpen.as_deref() == Some("reassign");
+    let win = (win.is_some() || reassign).then(|| tempo_app::engine::AudioAnalysis {
+        win: win.unwrap_or_default(),
+        reassign,
+    });
     let smoothing = smoothing
         .as_deref()
         .and_then(tempo_app::engine::RowSmoothing::from_tag)

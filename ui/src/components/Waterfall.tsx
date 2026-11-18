@@ -46,7 +46,9 @@ import { WaterfallLookStrip } from '../spectrum/WaterfallLookStrip'
 import {
   LOOK_DEFAULTS,
   LOOK_KEY,
+  contrastCurveOf,
   dssLookOf,
+  FLOOR_DB,
   loadLook,
   rowMsAt,
   sameLook,
@@ -109,7 +111,13 @@ const FLOW_KEY = 'nexus.waterfall.flow'
 /** A look change that redraws rows already held: the edges, and the whole 3-D look. The rest change
  *  what the NEXT rows are, and history keeps the rows it was given. */
 function redrawsHistory(a: WaterfallLook, b: WaterfallLook): boolean {
-  return a.edges !== b.edges || a.style3d !== b.style3d || a.impulse3d !== b.impulse3d || a.detail3d !== b.detail3d
+  return (
+    a.edges !== b.edges ||
+    a.style3d !== b.style3d ||
+    a.impulse3d !== b.impulse3d ||
+    a.detail3d !== b.detail3d ||
+    a.height3d !== b.height3d
+  )
 }
 
 /** Load a persisted [-1,1] slider value (gain/zero); missing/blocked → 0 (= auto). */
@@ -595,6 +603,10 @@ export function Waterfall({
   const lookRef = useRef(look)
   lookRef.current = look
   const [gear, setGear] = useState(false)
+  // The curve the palette is baked through: the ⚙ strip's contrast after the host's own (RTTY's
+  // `traceContrast`), so a host's curve keeps working whatever the operator picks. It reaches the
+  // picture, its history, the legend and the 3-D colours alike, because all of them read the LUT.
+  const drawCurve = useMemo(() => contrastCurveOf(look.contrast, contrastCurve), [look.contrast, contrastCurve])
   const gearId = useId()
   const setLook = (patch: Partial<WaterfallLook>) => {
     const next = { ...lookRef.current, ...patch }
@@ -656,11 +668,11 @@ export function Waterfall({
   // so it changes atomically with the legend gradient (a sync useMemo below) on
   // a theme switch — no frame where the legend and the canvas colormap disagree.
   useLayoutEffect(() => {
-    lutRef.current = lutFor(resolveColormap(palette, theme, night, skin), contrastCurve)
+    lutRef.current = lutFor(resolveColormap(palette, theme, night, skin), drawCurve)
     // Recolor the ACCUMULATED history in the new palette — the old pixel-scroll canvas
     // could only affect rows painted after the switch.
     rebuildRef.current?.()
-  }, [palette, theme, night, skin, contrastCurve])
+  }, [palette, theme, night, skin, drawCurve])
   // …and the overlay's inks are read afresh on the next frame after a theme switch or a colour-role
   // pick, before paint for the same reason: the markers must never lag the sign they agree with.
   useLayoutEffect(() => {
@@ -683,7 +695,7 @@ export function Waterfall({
   // Legend gradient (weak→strong, bottom→top) for the active colormap.
   const legendGradient = useMemo(() => {
     const name = resolveColormap(palette, theme, night, skin)
-    const curve = curveOn(name, contrastCurve)
+    const curve = curveOn(name, drawCurve)
     const stops: string[] = []
     // A curve bends the ramp, so the legend takes twice the stops to follow it.
     const N = curve ? 16 : 8
@@ -692,7 +704,7 @@ export function Waterfall({
       stops.push(`rgb(${r},${g},${b}) ${Math.round((i / N) * 100)}%`)
     }
     return `linear-gradient(to top, ${stops.join(', ')})`
-  }, [palette, theme, night, skin, contrastCurve])
+  }, [palette, theme, night, skin, drawCurve])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -884,8 +896,14 @@ export function Waterfall({
         // The ⚙ strip's two producer-side choices ride the read. At the shipped values nothing is
         // sent, so the backend sees exactly the call every build before the strip made.
         const l = lookRef.current
-        const shipped = l.resolution === LOOK_DEFAULTS.resolution && l.smoothing === LOOK_DEFAULTS.smoothing
-        spec = await getSpectrumRow(txRef.current, shipped ? undefined : { window: l.resolution, smoothing: l.smoothing })
+        const shipped =
+          l.resolution === LOOK_DEFAULTS.resolution &&
+          l.smoothing === LOOK_DEFAULTS.smoothing &&
+          l.sharpen === LOOK_DEFAULTS.sharpen
+        spec = await getSpectrumRow(
+          txRef.current,
+          shipped ? undefined : { window: l.resolution, smoothing: l.smoothing, sharpen: l.sharpen },
+        )
       } catch {
         return
       }
@@ -1002,7 +1020,9 @@ export function Waterfall({
       // top: both 0 → exactly this default, and Zero still slides ±½ window either side of it.
       // (`DIGITAL_WATERFALL_RANGE` in waterfall.ts is where the rig scope's auto range would
       // replace the park; it is the park until the operator rules.)
-      const base = DIGITAL_WATERFALL_RANGE === 'auto' ? autoBase : parkFloor(agcFloor, agcCeil)
+      // The ⚙ strip's noise floor moves the black point (2 dB above the noise is the shipped one).
+      const base =
+        DIGITAL_WATERFALL_RANGE === 'auto' ? autoBase : parkFloor(agcFloor, agcCeil, FLOOR_DB[lookRef.current.floor])
       ;({ floor: dispFloor, ceil: dispCeil } = applyGainZero(
         base.floor,
         base.ceil,

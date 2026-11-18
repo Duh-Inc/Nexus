@@ -45,7 +45,7 @@ import { M_CEIL, M_DB_PER_UNIT, M_FLOOR, M_HI, M_LO, M_N, META, type SpectrumRin
 import type { Detector, DssLook, Interpolation } from './types'
 
 /** The shipped 3-D look: AetherSDR's ridge surface, impulse rejection on, 256 canvas-2D columns. */
-export const DSS_LOOK_DEFAULT: Readonly<DssLook> = Object.freeze({ style: 'ridge', impulse: true, detail: 'fixed' })
+export const DSS_LOOK_DEFAULT: Readonly<DssLook> = Object.freeze({ style: 'ridge', impulse: true, detail: 'fixed', height: 'lift' })
 
 // Perspective geometry (shared with AetherSDR's dss_mesh.vert constants).
 const K_BACK_WIDTH = 0.6 // back row width / front
@@ -57,6 +57,14 @@ const K_SHADE_LO = 0.68
 const K_SHADE_HI = 1.32
 const K_MIN_DIM = 0.5 // depth dimming never falls below this
 const Z_CURVE = 0.55 // floor-lift exponent (their default)
+/** Height curves the ⚙ strip offers (`DssLook.height`): strength^curve × full ridge. `lift` is
+ *  AetherSDR's 0.55, which raises weak values and is why a busy band's noise floor stands up as a
+ *  forest; `suppress` pushes them down into a low carpet so signals stand out of it. */
+export const DSS_HEIGHT_CURVE: Readonly<Record<'lift' | 'linear' | 'suppress', number>> = Object.freeze({
+  lift: Z_CURVE,
+  linear: 1,
+  suppress: 1.8,
+})
 
 /** History depth shown in the 3D stack (front → back). */
 export const DSS_ROWS = 96
@@ -152,6 +160,7 @@ export function drawDss2d(
   rows: number,
   cols: number,
   lut: Uint8ClampedArray,
+  zCurve: number = Z_CURVE,
 ): void {
   if (w <= 0 || h <= 0) return
   const H = h
@@ -189,7 +198,7 @@ export function drawDss2d(
     for (let c = 0; c < cols; c++) {
       const x = inset + (cols > 1 ? c / (cols - 1) : 0) * rowW
       xs[c] = x
-      ys[c] = baselineY - Math.pow(inten[c], Z_CURVE) * maxRidge
+      ys[c] = baselineY - Math.pow(inten[c], zCurve) * maxRidge
     }
 
     // Pass 2: per-column trapezoid fill toward the floor (palette by amplitude, hazed by depth,
@@ -317,6 +326,7 @@ export function drawDssSpikes2d(
   rows: number,
   cols: number,
   lut: Uint8ClampedArray,
+  zCurve: number = Z_CURVE,
 ): void {
   const w = img.width
   const H = img.height
@@ -353,7 +363,7 @@ export function drawDssSpikes2d(
     const top = Math.ceil(maxRidge)
     // The strength a pixel `k` above the baseline stands for: the inverse of the zCurve lift.
     for (let k = 0; k <= top; k++) {
-      const s = Math.pow(Math.min(1, k / (maxRidge > 0 ? maxRidge : 1)), 1 / Z_CURVE)
+      const s = Math.pow(Math.min(1, k / (maxRidge > 0 ? maxRidge : 1)), 1 / zCurve)
       const li = ((s * 255) | 0) * 4
       ramp[k * 3] = clamp((lut[li] + (bgR - lut[li]) * haze) * dim, 0, 255)
       ramp[k * 3 + 1] = clamp((lut[li + 1] + (bgG - lut[li + 1]) * haze) * dim, 0, 255)
@@ -361,7 +371,7 @@ export function drawDssSpikes2d(
     }
     const colW = cols > 1 ? rowW / (cols - 1) : rowW
     for (let c = 0; c < cols; c++) {
-      const ht = Math.round(Math.pow(inten[c], Z_CURVE) * maxRidge)
+      const ht = Math.round(Math.pow(inten[c], zCurve) * maxRidge)
       if (ht <= 0) continue
       const x0 = Math.round(inset + c * colW - colW * 0.5)
       const x1 = Math.max(x0 + 1, Math.round(inset + c * colW + colW * 0.5))
@@ -474,7 +484,7 @@ const float K_SLOPE_GAIN = ${K_SLOPE_GAIN};
 const float K_SHADE_LO = ${K_SHADE_LO};
 const float K_SHADE_HI = ${K_SHADE_HI};
 const float K_MIN_DIM = ${K_MIN_DIM};
-const float Z_CURVE = ${Z_CURVE};
+uniform float uZCurve;
 ${GLSL_DSS_AT}
 void main() {
   int r = uRows - 1 - gl_InstanceID;
@@ -505,8 +515,8 @@ void main() {
   float haze = depthFrac * K_HAZE;
   float st0 = dssAt(uField, s, r);
   float st1 = dssAt(uField, s + 1, r);
-  vec2 p0 = vec2(inset + float(s) / float(segs) * rowW, baselineY - pow(st0, Z_CURVE) * maxRidge);
-  vec2 p1 = vec2(inset + float(s + 1) / float(segs) * rowW, baselineY - pow(st1, Z_CURVE) * maxRidge);
+  vec2 p0 = vec2(inset + float(s) / float(segs) * rowW, baselineY - pow(st0, uZCurve) * maxRidge);
+  vec2 p1 = vec2(inset + float(s + 1) / float(segs) * rowW, baselineY - pow(st1, uZCurve) * maxRidge);
   int li = int(st0 * 255.0);
   vec3 base = texelFetch(uLut, ivec2(li, 0), 0).rgb * 255.0;
   vec3 bg = texelFetch(uLut, ivec2(0, 0), 0).rgb * 255.0;
@@ -523,7 +533,7 @@ void main() {
     float colW = rowW / float(segs);
     float x0 = p0.x - colW * 0.5;
     float x1 = max(x0 + 1.0, p0.x + colW * 0.5);
-    float ht = pow(st0, Z_CURVE);
+    float ht = pow(st0, uZCurve);
     bool up = corner == 0 || corner == 1 || corner == 3;
     bool right = corner == 1 || corner == 2 || corner == 4;
     pos = vec2(right ? x1 : x0, up ? baselineY - ht * maxRidge : baselineY);
@@ -540,7 +550,7 @@ void main() {
       ? uPlotH - float(r - 1) / DSS_ROWS * uPlotH * K_DEPTH_SPAN
       : uPlotH;
     float stl = dssAt(uField, max(s - 1, 0), r);
-    float yl = baselineY - pow(stl, Z_CURVE) * maxRidge;
+    float yl = baselineY - pow(stl, uZCurve) * maxRidge;
     float slope = (yl - p1.y) / (maxRidge > 1.0 ? maxRidge : 1.0);
     float shade = clamp(1.0 + K_SLOPE_GAIN * slope, K_SHADE_LO, K_SHADE_HI);
     vec3 c = clamp((base + (bg - base) * haze) * (dim * shade), 0.0, 255.0);
@@ -580,11 +590,11 @@ in float vHt;
 in float vDim;
 in float vHaze;
 out vec4 outColor;
-const float Z_CURVE = ${Z_CURVE};
+uniform float uZCurve;
 void main() {
   if (vHt >= 0.0) {
     // A spike: the palette at the strength this height stands for, hazed and dimmed by depth.
-    float s = pow(clamp(vHt, 0.0, 1.0), 1.0 / Z_CURVE);
+    float s = pow(clamp(vHt, 0.0, 1.0), 1.0 / uZCurve);
     vec3 base = texelFetch(uLut, ivec2(int(s * 255.0), 0), 0).rgb;
     vec3 bg = texelFetch(uLut, ivec2(0, 0), 0).rgb;
     outColor = vec4(clamp((base + (bg - base) * vHaze) * vDim, 0.0, 1.0), 1.0);

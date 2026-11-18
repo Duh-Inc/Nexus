@@ -52,6 +52,8 @@ export type Detector = 'peak' | 'average'
  *
  *  `linear` blends the two nearest bin centres. It is the shipped behaviour and it was chosen
  *  deliberately: point-sampling here is the operator's "looks so 8 bit" (2026-08-03).
+ *  `soft` holds each bin flat across most of its width and blends only a short stretch either
+ *  side of the boundary, a readable middle between the two.
  *  `nearest` holds each bin's own value across every pixel it covers, so a bin edge draws as an
  *  edge. Zoomed in past one bin per pixel that is the difference between a carrier with soft
  *  shoulders and one with a hard step — the look a rig's own panadapter has.
@@ -60,7 +62,7 @@ export type Detector = 'peak' | 'average'
  *  (`tempo-core::spectrum::WindowN`: 23.4 Hz at the digital waterfall's 2048), not the display
  *  grid's. This chooses how the grid between bin centres is drawn, never what is in it, and no
  *  value of it makes a lobe thinner. */
-export type Interpolation = 'linear' | 'nearest'
+export type Interpolation = 'linear' | 'soft' | 'nearest'
 
 /** Bands of the canvas, in device pixels. The trace sits at the top, the waterfall fills the rest,
  *  and a strip at the bottom is left for the host's axis. `dss` draws the 3-D stack over the trace
@@ -88,6 +90,10 @@ export interface DssLook {
   style: 'ridge' | 'spikes'
   impulse: boolean
   detail: 'fixed' | 'pixel'
+  /** How strength becomes height (`DSS_HEIGHT_CURVE`): `lift` raises weak values (the shipped
+   *  curve, which is why the noise floor stands as a forest), `linear` draws them as they are, and
+   *  `suppress` flattens the noise into a low carpet so signals stand out of it. Absent = `lift`. */
+  height?: 'lift' | 'linear' | 'suppress'
 }
 
 /** Everything one `draw` paints from, besides the committed rows. */
