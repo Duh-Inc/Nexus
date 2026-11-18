@@ -18347,11 +18347,27 @@ async fn get_space_wx_scales(
 }
 
 /// One waterfall row (Goertzel power spectrum of the last received frame).
+///
+/// `window` and `smoothing` are the digital waterfall's ⚙ strip: the analysis window it asks the
+/// producer to run (`"fast"`, `"balanced"`, `"sharp"`) and which reading of the averaging window
+/// it draws (`"average"`, `"peak"`, `"live"`). Both are optional and an unknown tag is the default,
+/// so every other caller of this command, and a UI out of step with this build, gets exactly the
+/// row it always got. A `window` renews a standing request that lapses on its own; see
+/// `SpectrumFeed::audio_frame_with`.
 #[tauri::command(async)]
 fn get_spectrum_row(
+    window: Option<String>,
+    smoothing: Option<String>,
     feed: State<'_, tempo_app::engine::SpectrumFeed>,
     state: State<'_, SharedEngine>,
 ) -> Result<Spectrum, String> {
+    let win = window
+        .as_deref()
+        .and_then(tempo_core::spectrum::WindowN::from_tag);
+    let smoothing = smoothing
+        .as_deref()
+        .and_then(tempo_app::engine::RowSmoothing::from_tag)
+        .unwrap_or_default();
     // Fast path: the radio loop and the native scope workers publish every row here, so the
     // waterfall reads WITHOUT the engine mutex. That mutex is held across blocking CAT I/O at
     // the 15 s slot boundary, which froze the waterfall for ~1 s every 15 s in every mode
@@ -18361,7 +18377,7 @@ fn get_spectrum_row(
     // 0-4000 Hz passband. `feed.row()` prefers a native RF row, so a rig with a scope streaming
     // replaced all of them with a band-wide sweep no decoder can use. The rig scope has its own
     // command (`get_scope_row`) and its own view (`PhoneScope`, in Phone and CW only).
-    if let Some(row) = feed.audio_row() {
+    if let Some(row) = feed.audio_row_with(win, smoothing) {
         return Ok(row);
     }
     // Nothing published yet: a Companion/UDP source has no local capture, so its row is

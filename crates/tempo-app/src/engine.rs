@@ -353,6 +353,16 @@ use tempo_core::{channel, spectrum, tempo_fast};
 #[derive(Default)]
 struct FeedRows {
     audio: Option<RowAverage>,
+    /// The window length the rows in `audio` were computed at. A change opens a fresh averaging
+    /// window: two window lengths share span, bin count and source when the bin count does not
+    /// move with them, so `RowAverage::push` could not see the difference (the `scope_win` rule).
+    audio_win: spectrum::WindowN,
+    /// The digital waterfall's standing request for its analysis window, and when it was last
+    /// renewed. It rides the READ (see [`SpectrumFeed::audio_frame_with`]) and lapses after
+    /// [`SpectrumFeed::SCOPE_REQ_TTL`], so a waterfall that leaves the screen cannot leave the
+    /// producer computing a longer FFT for nobody. Lapsed or never asked = `Balanced`, the
+    /// shipped row.
+    audio_req: Option<(spectrum::WindowN, Instant)>,
     /// The NEWEST RF frame and when it was published. Everything that asks "what is the RF
     /// picture now" reads this one; the frames before it wait in `rf_prev`.
     rf: Option<(SpectrumFrame, Instant)>,
@@ -574,6 +584,52 @@ struct ScopeReq {
     at: Instant,
 }
 
+/// What a READ of an averaging slot hands back from the frames published since the last read.
+///
+/// WHY THERE IS A CHOICE (operator request, 2026-11: the waterfall is "very mixed, averaged, not
+/// sharp" next to an Icom or Yaesu scope). [`RowAverage`] was built to stop the noise floor
+/// boiling ("looks so 8 bit", 2026-08-03), and it does — by power-averaging ~6 frames per drawn
+/// row at the FT surfaces' 120 ms. A rig's own scope at its fast sweep does not average: its
+/// noise floor is speckle and its carriers are thin bright lines. Both looks are legitimate and
+/// operators disagree, so the read names one. `Average` is the default and the shipped picture.
+///
+/// All three are folded on PUBLISH, so a read is still a clone whichever is asked for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RowSmoothing {
+    /// The power mean of the frames since the last read — WSJT-X's `m_waterfallAvg`.
+    #[default]
+    Average,
+    /// The per-bin MAXIMUM of those frames. Taken on the display axis, which is exact: the axis
+    /// is a monotone map of power, and a maximum commutes with any monotone map (unlike a mean,
+    /// which is why `Average` must convert). A carrier that was there for one frame in six is
+    /// drawn at full strength; the noise floor rises a little and grains.
+    Peak,
+    /// The newest frame alone: one FFT per drawn row, nothing folded. The rig-scope look, noise
+    /// floor and all.
+    Live,
+}
+
+impl RowSmoothing {
+    /// The wire tag, beside [`Self::from_tag`] so the pair cannot drift.
+    pub const fn tag(self) -> &'static str {
+        match self {
+            Self::Average => "average",
+            Self::Peak => "peak",
+            Self::Live => "live",
+        }
+    }
+    /// The variant a tag names, or `None` for anything else. The caller decides what an unknown
+    /// tag means (the command layer: the default), so it is said where it is chosen.
+    pub fn from_tag(tag: &str) -> Option<Self> {
+        match tag {
+            "average" => Some(Self::Average),
+            "peak" => Some(Self::Peak),
+            "live" => Some(Self::Live),
+            _ => None,
+        }
+    }
+}
+
 /// The audio slot: the running POWER mean of every frame published since the last read.
 ///
 /// WHY (operator, 2026-08-03: the waterfall "looks so 8 bit"). The producer publishes every
@@ -605,6 +661,11 @@ struct RowAverage {
     /// a row instead of blanking (exactly what the latest-value slot did in that case). It carries
     /// the NEWEST folded frame's `seq` and `t_ms`: a mean is new exactly when a frame went in.
     mean: SpectrumFrame,
+    /// Per-bin maximum of the same frames, on the DISPLAY axis ([`RowSmoothing::Peak`]). Folded in
+    /// the same pass as `sum` and retained across a read exactly as `mean` is.
+    peak: Vec<f32>,
+    /// The newest frame's values ([`RowSmoothing::Live`]), copied in place on every publish.
+    latest: Vec<f32>,
     /// When the most recent frame was published. This is the freshness clock the precedence
     /// rule in [`SpectrumFeed::row`] reads, unchanged — a read does not touch it.
     at: Instant,
@@ -627,6 +688,8 @@ impl RowAverage {
                 .map(|v| spectrum::display_to_power(*v))
                 .collect(),
             n: 1,
+            peak: row.bins.clone(),
+            latest: row.bins.clone(),
             mean: row,
             at: Instant::now(),
         }
@@ -658,8 +721,21 @@ impl RowAverage {
             *self = Self::start(row);
             return;
         }
-        for (s, v) in self.sum.iter_mut().zip(&row.bins) {
-            *s += spectrum::display_to_power(*v);
+        // One pass for all three readings: the power sum, the display-axis maximum and the copy.
+        // `peak` and `latest` are the same length as `sum` here (a bin-count change restarted
+        // above), so the steady state still allocates nothing.
+        for (((s, pk), l), &v) in self
+            .sum
+            .iter_mut()
+            .zip(self.peak.iter_mut())
+            .zip(self.latest.iter_mut())
+            .zip(&row.bins)
+        {
+            *s += spectrum::display_to_power(v);
+            if v > *pk {
+                *pk = v;
+            }
+            *l = v;
         }
         self.n += 1;
         let n = self.n as f32;
@@ -679,8 +755,23 @@ impl RowAverage {
     /// overwritten by the next `push`, and `mean` deliberately survives so an unfed read repeats
     /// it. Nothing here divides.
     fn take(&mut self) -> SpectrumFrame {
+        self.take_as(RowSmoothing::Average)
+    }
+
+    /// [`Self::take`], handing back the reading `mode` names. Every one closes the window the
+    /// same way, so a reader that switches mode never sees a window that straddles the switch.
+    fn take_as(&mut self, mode: RowSmoothing) -> SpectrumFrame {
         self.n = 0;
-        self.mean.clone()
+        let bins = match mode {
+            RowSmoothing::Average => return self.mean.clone(),
+            RowSmoothing::Peak => self.peak.clone(),
+            RowSmoothing::Live => self.latest.clone(),
+        };
+        SpectrumFrame {
+            bins,
+            source: self.mean.source.clone(),
+            ..self.mean
+        }
     }
 }
 
@@ -769,8 +860,16 @@ impl SpectrumFeed {
         since.is_none_or(|at| at.elapsed() < Self::TX_HOLD_MAX)
     }
 
-    /// Publish the audio-FFT row (the rx-dsp thread) into the running average.
+    /// Publish the audio-FFT row (the rx-dsp thread) into the running average, computed at the
+    /// shipped `Balanced` window.
     pub fn publish_audio(&self, row: Spectrum) {
+        self.publish_audio_at(row, spectrum::WindowN::Balanced);
+    }
+
+    /// [`Self::publish_audio`] for a row computed at `win` — the one [`Self::audio_window`] asked
+    /// for. A window that differs from the slot's opens a fresh average, so one drawn row never
+    /// blends two resolutions.
+    pub fn publish_audio_at(&self, row: Spectrum, win: spectrum::WindowN) {
         if let Ok(mut g) = self.rows.lock() {
             // Under the TX hold the frame is a picture of the muted receiver, not the band —
             // drop it, and keep the LAST REAL picture's freshness alive so readers repeat it
@@ -784,6 +883,10 @@ impl SpectrumFeed {
                     }
                 }
                 return;
+            }
+            if g.audio_win != win {
+                g.audio = None;
+                g.audio_win = win;
             }
             // Only the audio FFT publishes here, so its axis is the frame's scale.
             let frame = g.stamp(row, SpectrumScale::AUDIO, None);
@@ -904,10 +1007,34 @@ impl SpectrumFeed {
     /// [`Self::audio_row`], as the frame the audio slot holds — and it closes the averaging
     /// window exactly as the row read does.
     pub fn audio_frame(&self) -> Option<SpectrumFrame> {
+        self.audio_frame_with(None, RowSmoothing::Average)
+    }
+
+    /// [`Self::audio_row`] for the digital waterfall's own settings: the analysis window it wants
+    /// the producer to run (`None` asks for nothing and leaves any standing request alone), and
+    /// which reading of the averaging window it draws. The request renews on every read, like
+    /// the rig scope's span, and lapses on its own when the waterfall stops reading.
+    pub fn audio_row_with(
+        &self,
+        win: Option<spectrum::WindowN>,
+        smoothing: RowSmoothing,
+    ) -> Option<Spectrum> {
+        self.audio_frame_with(win, smoothing).map(Spectrum::from)
+    }
+
+    /// [`Self::audio_row_with`], as a frame.
+    pub fn audio_frame_with(
+        &self,
+        win: Option<spectrum::WindowN>,
+        smoothing: RowSmoothing,
+    ) -> Option<SpectrumFrame> {
         let mut g = self.rows.lock().ok()?;
+        if let Some(w) = win {
+            g.audio_req = Some((w, Instant::now()));
+        }
         let audio = g.audio.as_mut()?;
         if audio.at.elapsed() < std::time::Duration::from_secs(2) {
-            return Some(audio.take());
+            return Some(audio.take_as(smoothing));
         }
         // STALE, but the capture path HAS published before: go quiet. Returning None here
         // would send the reader to the engine's Companion fallback, which computes a row
@@ -989,6 +1116,19 @@ impl SpectrumFeed {
         let g = self.rows.lock().ok()?;
         let req = g.scope_req?;
         (req.at.elapsed() < Self::SCOPE_REQ_TTL).then_some((req.lo, req.hi, req.win))
+    }
+
+    /// The analysis window the audio row should be computed at (the rx-dsp thread, once a tick):
+    /// what the digital waterfall last asked for while the request is fresh, `Balanced` (the
+    /// shipped row) otherwise. One mutex read, like [`Self::scope_request`].
+    pub fn audio_window(&self) -> spectrum::WindowN {
+        self.rows
+            .lock()
+            .ok()
+            .and_then(|g| g.audio_req)
+            .filter(|(_, at)| at.elapsed() < Self::SCOPE_REQ_TTL)
+            .map(|(w, _)| w)
+            .unwrap_or_default()
     }
 
     /// Publish a row computed over the scope's own span (the rx-dsp thread). Held during TX
@@ -69897,6 +70037,126 @@ mod tests {
         let a = feed.audio_row().expect("an audio row");
         assert_eq!(a.source, "audio");
         assert_eq!((a.lo_hz, a.hi_hz), (0.0, 4000.0), "0-4000 Hz, not the band");
+    }
+
+    fn audio(bins: Vec<f32>) -> Spectrum {
+        Spectrum {
+            row: bins,
+            lo_hz: 0.0,
+            hi_hz: 4000.0,
+            source: "audio".into(),
+        }
+    }
+
+    /// THE THREE READINGS OF ONE WINDOW (the waterfall's ⚙ strip). Three frames go in; `Peak` is
+    /// the per-bin maximum, `Live` the newest frame verbatim, `Average` the POWER mean — computed
+    /// here from the conversion functions rather than from `RowAverage`'s own arithmetic.
+    #[test]
+    fn a_read_hands_back_the_mean_the_peak_or_the_newest_frame() {
+        let frames = [vec![0.2, 0.8], vec![0.6, 0.4], vec![0.4, 0.5]];
+        let read = |mode: RowSmoothing| {
+            let feed = SpectrumFeed::default();
+            for f in &frames {
+                feed.publish_audio(audio(f.clone()));
+            }
+            feed.audio_row_with(None, mode).expect("a row").row
+        };
+        assert_eq!(read(RowSmoothing::Peak), vec![0.6, 0.8]);
+        assert_eq!(read(RowSmoothing::Live), vec![0.4, 0.5]);
+        let mean: Vec<f32> = (0..2)
+            .map(|i| {
+                let p: f32 = frames
+                    .iter()
+                    .map(|f| spectrum::display_to_power(f[i]))
+                    .sum();
+                spectrum::power_to_display(p / 3.0)
+            })
+            .collect();
+        let got = read(RowSmoothing::Average);
+        for (g, m) in got.iter().zip(&mean) {
+            assert!((g - m).abs() < 1e-5, "power mean {m}, got {g}");
+        }
+        // And `Average` is still what the plain read returns: nobody else's picture moved.
+        let feed = SpectrumFeed::default();
+        for f in &frames {
+            feed.publish_audio(audio(f.clone()));
+        }
+        assert_eq!(feed.audio_row().expect("a row").row, got);
+    }
+
+    /// A read closes the window whichever reading it asked for, so the next `Peak` describes only
+    /// the frames after it — a carrier from an earlier window is not held forever.
+    #[test]
+    fn a_peak_read_opens_a_fresh_window() {
+        let feed = SpectrumFeed::default();
+        feed.publish_audio(audio(vec![0.9, 0.1]));
+        assert_eq!(
+            feed.audio_row_with(None, RowSmoothing::Peak).unwrap().row,
+            vec![0.9, 0.1]
+        );
+        feed.publish_audio(audio(vec![0.2, 0.3]));
+        assert_eq!(
+            feed.audio_row_with(None, RowSmoothing::Peak).unwrap().row,
+            vec![0.2, 0.3]
+        );
+        // A reader that outruns the producer repeats the last reading rather than blanking.
+        assert_eq!(
+            feed.audio_row_with(None, RowSmoothing::Peak).unwrap().row,
+            vec![0.2, 0.3]
+        );
+    }
+
+    /// Two window lengths share span, bin count and source, so only the slot's own record of the
+    /// window can keep them out of one average (the `scope_win` rule, for the audio slot).
+    #[test]
+    fn a_window_change_restarts_the_audio_average() {
+        let feed = SpectrumFeed::default();
+        feed.publish_audio_at(audio(vec![0.9]), spectrum::WindowN::Balanced);
+        feed.publish_audio_at(audio(vec![0.1]), spectrum::WindowN::Sharp);
+        assert_eq!(
+            feed.audio_frames_pending_for_test(),
+            1,
+            "the Sharp frame opened a window"
+        );
+        assert_eq!(
+            feed.audio_row_with(None, RowSmoothing::Peak).unwrap().row,
+            vec![0.1]
+        );
+    }
+
+    /// The window request rides the read and names what the producer runs; asking for nothing
+    /// leaves it alone, and with no request at all the producer runs the shipped `Balanced`.
+    #[test]
+    fn the_waterfall_window_request_rides_the_read() {
+        let feed = SpectrumFeed::default();
+        assert_eq!(
+            feed.audio_window(),
+            spectrum::WindowN::Balanced,
+            "nobody asked"
+        );
+        feed.publish_audio(audio(vec![0.5]));
+        feed.audio_row_with(Some(spectrum::WindowN::Sharp), RowSmoothing::Average);
+        assert_eq!(feed.audio_window(), spectrum::WindowN::Sharp);
+        feed.audio_row_with(None, RowSmoothing::Average);
+        assert_eq!(
+            feed.audio_window(),
+            spectrum::WindowN::Sharp,
+            "a plain read asks for nothing"
+        );
+        feed.audio_row_with(Some(spectrum::WindowN::Fast), RowSmoothing::Live);
+        assert_eq!(feed.audio_window(), spectrum::WindowN::Fast);
+    }
+
+    #[test]
+    fn smoothing_tags_round_trip() {
+        for m in [
+            RowSmoothing::Average,
+            RowSmoothing::Peak,
+            RowSmoothing::Live,
+        ] {
+            assert_eq!(RowSmoothing::from_tag(m.tag()), Some(m));
+        }
+        assert_eq!(RowSmoothing::from_tag("smooth"), None);
     }
 
     #[test]
