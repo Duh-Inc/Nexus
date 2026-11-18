@@ -8558,9 +8558,7 @@ fn reveal_diag_log(app: tauri::AppHandle) -> Result<(), String> {
             .reveal_item_in_dir(&path)
             .map_err(|e| e.to_string())
     } else if let Some(dir) = path.parent() {
-        app.opener()
-            .open_path(dir.to_string_lossy().to_string(), None::<&str>)
-            .map_err(|e| e.to_string())
+        open_on_host(&app, dir.to_string_lossy())
     } else {
         Ok(())
     }
@@ -9061,9 +9059,7 @@ fn reveal_all_txt(app: tauri::AppHandle) -> Result<(), String> {
             .reveal_item_in_dir(&path)
             .map_err(|e| e.to_string())
     } else if let Some(dir) = path.parent() {
-        app.opener()
-            .open_path(dir.to_string_lossy().to_string(), None::<&str>)
-            .map_err(|e| e.to_string())
+        open_on_host(&app, dir.to_string_lossy())
     } else {
         Ok(())
     }
@@ -9520,13 +9516,10 @@ fn recordings_location() -> String {
 /// this issue is about.
 #[tauri::command]
 fn reveal_recordings(app: tauri::AppHandle) -> Result<(), String> {
-    use tauri_plugin_opener::OpenerExt;
     let dir = recordings_dir();
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
-    app.opener()
-        .open_path(dir.to_string_lossy().to_string(), None::<&str>)
-        .map_err(|e| e.to_string())
+    open_on_host(&app, dir.to_string_lossy())
 }
 
 /// Open the SSTV gallery folder (`Pictures/Nexus SSTV`) — #130. The diagnostic log, ALL.TXT and
@@ -9535,13 +9528,10 @@ fn reveal_recordings(app: tauri::AppHandle) -> Result<(), String> {
 /// lands in the folder pictures will go to instead of getting a silent no-op.
 #[tauri::command]
 fn reveal_sstv_gallery(app: tauri::AppHandle) -> Result<(), String> {
-    use tauri_plugin_opener::OpenerExt;
     let dir = sstv_gallery_dir();
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
-    app.opener()
-        .open_path(dir.to_string_lossy().to_string(), None::<&str>)
-        .map_err(|e| e.to_string())
+    open_on_host(&app, dir.to_string_lossy())
 }
 
 /// Write one per-QSO RX recording, naming the FULL path in any error.
@@ -18922,6 +18912,8 @@ fn save_and_publish(
                 settings.lotw_last_qsl.clear();
             }
             keep_lotw_place_for_its_account(eng.settings(), &mut settings);
+            // QRZ's resume point and high-water are the sync's, the same way.
+            keep_qrz_fetch_place(eng.settings(), &mut settings);
             // Same for eQSL — its cursor is account-bound (see download_eqsl_report).
             keep_eqsl_cursor_for_its_account(eng.settings(), &mut settings);
             // A ClubLog credential change re-arms auto-push (clears the 403 suspend).
@@ -24653,9 +24645,7 @@ fn reveal_in_downloads(app: tauri::AppHandle, filename: String) -> Result<bool, 
         return Ok(false);
     };
     if app.opener().reveal_item_in_dir(&path).is_err() {
-        app.opener()
-            .open_path(dir.to_string_lossy().to_string(), None::<&str>)
-            .map_err(|e| e.to_string())?;
+        open_on_host(&app, dir.to_string_lossy())?;
     }
     Ok(true)
 }
@@ -40077,6 +40067,16 @@ fn keep_lotw_place_for_its_account(held: &Settings, form: &mut Settings) {
     }
 }
 
+/// A save's place in QRZ's whole-book fetch and its delta high-water ([`save_and_publish`],
+/// [`sync_qrz_book`]): the sync's own, never the form's, so the held ones are kept. A form loaded
+/// before or during a fetch would otherwise put an older resume point back, and the next sync
+/// would fetch pages again or start the book over.
+fn keep_qrz_fetch_place(held: &Settings, form: &mut Settings) {
+    form.qrz_fetch_after_logid = held.qrz_fetch_after_logid;
+    form.qrz_fetch_started_unix = held.qrz_fetch_started_unix;
+    form.qrz_last_sync_unix = held.qrz_last_sync_unix;
+}
+
 /// Whether a finished eQSL InBox sync may move the cursor: only when its download is complete
 /// (a cut-off one must not skip the cards it never received), and only while Settings still name
 /// the account it read. The fetch runs without the engine lock, and a save meanwhile that names
@@ -41411,6 +41411,12 @@ const QRZ_SYNC_CUT_SHORT: ConnDetail = conn_detail!(
     "QRZ's logbook download stopped before its end. The pages that arrived before it are merged \
      and kept, and the next sync carries on from where it stopped."
 );
+/// A full page of QRZ's book that did not move past the page before it: QRZ answered from
+/// somewhere other than where it was asked to start. Nexus's own words.
+const QRZ_SYNC_NO_PROGRESS: ConnDetail = conn_detail!(
+    "QRZ's logbook download did not move past one of its pages. The pages that arrived before it \
+     are merged and kept, and the next sync starts the logbook again from its beginning."
+);
 /// QRZ answered and refused. The class; never QRZ's wording, which is the leak.
 const QRZ_SYNC_REFUSED: ConnDetail = conn_detail!(
     "QRZ took the request and refused it — check the Logbook API key in Settings ▸ Services ▸ \
@@ -41544,7 +41550,7 @@ fn qrz_book_pages(
     cut_short: &str,
     page: &mut QrzPageSink<'_>,
 ) -> Result<(), QrzSyncFailure> {
-    use tempo_core::qrz::FetchPage;
+    use tempo_core::qrz::{FetchPage, PageFault};
     loop {
         let resp = post(tempo_core::qrz::build_fetch_page_body(key, after)).map_err(|message| {
             QrzSyncFailure {
@@ -41556,9 +41562,12 @@ fn qrz_book_pages(
         let next = match tempo_core::qrz::fetch_page_verdict(&fetched, after) {
             Ok(FetchPage::Last) => None,
             Ok(FetchPage::Next(n)) => Some(n),
-            Err(_) => {
+            Err(fault) => {
                 return Err(QrzSyncFailure {
-                    detail: QRZ_SYNC_CUT_SHORT,
+                    detail: match fault {
+                        PageFault::CutShort => QRZ_SYNC_CUT_SHORT,
+                        PageFault::NoProgress => QRZ_SYNC_NO_PROGRESS,
+                    },
                     message: ScreenReason::new(cut_short.to_string()),
                 })
             }
@@ -41666,6 +41675,22 @@ fn sync_qrz_book(
         }
         save_qrz_fetch_cursor(engine, next, started);
         Ok(())
+    })
+    .map_err(|failure| {
+        if failure.detail != QRZ_SYNC_NO_PROGRESS {
+            return failure;
+        }
+        // Asking from the same place again would bring the same page back, every time: the next
+        // sync starts the book over instead (the pages merged so far merge again unchanged).
+        let mut eng = engine_lock(engine);
+        eng.set_qrz_fetch_cursor(0, 0);
+        persist_settings(eng.settings().clone(), |e| {
+            eprintln!("[qrz-sync] settings save failed: {e}")
+        });
+        QrzSyncFailure {
+            detail: QRZ_SYNC_NO_PROGRESS,
+            message: ScreenReason::new(QRZ_SYNC_NO_PROGRESS.as_str().to_string()),
+        }
     })?;
     // `qrz_book_pages` hands over at least one page before it returns Ok.
     Ok(total.unwrap_or_else(|| tempo_core::reconcile::ReconcileSummary::default().into()))
@@ -41963,6 +41988,52 @@ mod qrz_paged_sync_tests {
         assert_eq!(contacts(&engine), 250);
         assert_eq!(cursors(&engine).0, logid(249) + 1);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A QRZ that answers every page from the book's beginning, whatever AFTERLOGID asks, stops
+    /// the fetch on its second page. The resume point clears, so no sync keeps asking for that one
+    /// page, and the operator is told the next sync starts the book over.
+    #[test]
+    fn a_page_that_does_not_move_on_starts_the_book_over() {
+        let (dir, engine) = crate::durable_command_tests::engine_on_store("qrz-stuck", 0);
+        let qrz = FakeBook::of(620);
+        let from_the_start = |body: String| {
+            let (head, rest) = body.split_once("AFTERLOGID%3A").expect("a page FETCH");
+            let tail = rest.trim_start_matches(|c: char| c.is_ascii_digit());
+            qrz.post(format!("{head}AFTERLOGID%3A0{tail}"))
+        };
+        let failed = sync_qrz_with(&engine, KEY, &from_the_start, None, true)
+            .expect_err("the stuck page is refused");
+        assert!(
+            failed.message.on_screen().contains("from its beginning"),
+            "{}",
+            failed.message.on_screen()
+        );
+        assert_eq!(contacts(&engine), 250, "the first page is kept");
+        assert_eq!(cursors(&engine), (0, 0, 0), "no resume point to stick on");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The fetch's resume point and the delta high-water are the sync's own: a Settings save
+    /// from a form loaded before the fetch moved them keeps the engine's.
+    #[test]
+    fn a_settings_save_keeps_the_fetchs_place() {
+        let held = crate::Settings {
+            qrz_fetch_after_logid: 1_750,
+            qrz_fetch_started_unix: 1_763_000_000,
+            qrz_last_sync_unix: 1_762_000_000,
+            ..crate::Settings::default()
+        };
+        let mut stale = crate::Settings::default();
+        crate::keep_qrz_fetch_place(&held, &mut stale);
+        assert_eq!(
+            (
+                stale.qrz_fetch_after_logid,
+                stale.qrz_fetch_started_unix,
+                stale.qrz_last_sync_unix
+            ),
+            (1_750, 1_763_000_000, 1_762_000_000)
+        );
     }
 
     /// Check confirmations ▸ QRZ reads the whole book a page at a time too.
@@ -51573,6 +51644,99 @@ fn spawn_launcher(program: &str, args: &[&str], url: &str) -> Result<(), String>
     }
 }
 
+/// The desktop launchers that open a URL, a file or a folder on Linux, in the order they are
+/// tried. The list mirrors the `open` crate's: the freedesktop launcher first, then GIO (present
+/// where `xdg-open` may not be), then the WSL bridge and the Debian browser alternative.
+#[cfg(target_os = "linux")]
+const LAUNCHERS: [(&str, &[&str]); 5] = [
+    ("xdg-open", &[]),
+    ("gio", &["open"]),
+    ("kde-open", &[]),
+    ("wslview", &[]),
+    ("x-www-browser", &[]),
+];
+
+/// Open a web address, a file or a folder with this computer's own handler (its browser, its file
+/// manager), as the opener plugin does, but never with the AppImage's environment.
+///
+/// The plugin starts `xdg-open` with Nexus's environment as it stands, and inside an AppImage
+/// that environment puts the bundle's own libraries first on `LD_LIBRARY_PATH` and the bundle's
+/// directories on `PATH`, `XDG_DATA_DIRS`, the GTK and GIO module paths and more. The host's
+/// browser or file manager then loads the bundle's older libraries and can fail to start, as the
+/// host's TQSL did (`tempo_core::process`). So inside an AppImage the launcher is started here,
+/// through [`tempo_core::process::command_in`], which takes the bundle's entries out
+/// ([`host_launchers`]); everywhere else (Windows, macOS, a .deb, a dev run) the plugin's own
+/// call is made, unchanged. The plugin's `open_url` and `open_path` are one and the same call on
+/// the desktop, so this serves both.
+fn open_on_host<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    target: impl Into<String>,
+) -> Result<(), String> {
+    let target = target.into();
+    #[cfg(target_os = "linux")]
+    if let Some(launchers) = host_launchers(&target, std::env::vars_os()) {
+        return spawn_first_launcher(launchers);
+    }
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(target, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+/// The launcher commands that open `target` on the host, each with the environment `vars` less
+/// the AppImage's own entries, in [`LAUNCHERS`] order; `None` when `vars` is not an AppImage's
+/// (nothing would be taken out), and the opener plugin opens it as it always has.
+#[cfg(target_os = "linux")]
+fn host_launchers(
+    target: &str,
+    vars: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> Option<Vec<std::process::Command>> {
+    let vars: Vec<_> = vars.into_iter().collect();
+    if tempo_core::process::host_env_changes("xdg-open".as_ref(), vars.iter().cloned()).is_empty() {
+        return None;
+    }
+    Some(
+        LAUNCHERS
+            .iter()
+            .map(|(program, args)| {
+                let mut cmd = tempo_core::process::command_in(program, vars.iter().cloned());
+                cmd.args(*args).arg(target);
+                cmd
+            })
+            .collect(),
+    )
+}
+
+/// Start the first of `launchers` that starts, as the opener plugin does (`open::that_detached`):
+/// with no stdin, stdout or stderr, in a process group of its own so a signal meant for Nexus's
+/// terminal does not reach the browser, and reaped on a thread of its own when it exits. `Err`
+/// only when none of them could be started.
+#[cfg(target_os = "linux")]
+fn spawn_first_launcher(launchers: Vec<std::process::Command>) -> Result<(), String> {
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+    let mut failures = Vec::new();
+    for mut cmd in launchers {
+        let started = cmd
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn();
+        match started {
+            Ok(mut child) => {
+                std::thread::spawn(move || child.wait());
+                return Ok(());
+            }
+            Err(e) => failures.push(format!("{}: {e}", cmd.get_program().to_string_lossy())),
+        }
+    }
+    Err(format!(
+        "no launcher could be started ({})",
+        failures.join("; ")
+    ))
+}
+
 /// Open a URL in the operator's browser, reporting a failure as a failure (Linux).
 ///
 /// The candidate list mirrors the `open` crate's: the freedesktop launcher first, then GIO
@@ -51581,13 +51745,6 @@ fn spawn_launcher(program: &str, args: &[&str], url: &str) -> Result<(), String>
 /// so does this, carrying what each said.
 #[cfg(target_os = "linux")]
 fn open_url_checked(url: &str) -> Result<(), String> {
-    const LAUNCHERS: [(&str, &[&str]); 5] = [
-        ("xdg-open", &[]),
-        ("gio", &["open"]),
-        ("kde-open", &[]),
-        ("wslview", &[]),
-        ("x-www-browser", &[]),
-    ];
     let mut refusals = Vec::new();
     for (program, args) in LAUNCHERS {
         match spawn_launcher(program, args, url) {
@@ -51633,6 +51790,68 @@ fn open_download_page(app: tauri::AppHandle) -> Result<(), String> {
         ),
     }
     result
+}
+
+/// Opening a web address, a file or a folder from inside an AppImage starts the host's launcher
+/// without the bundle's paths in its environment; outside one the opener plugin opens it.
+#[cfg(all(test, target_os = "linux"))]
+mod host_open_tests {
+    use std::collections::HashMap;
+    use std::ffi::{OsStr, OsString};
+
+    fn vars(pairs: &[(&str, &str)]) -> Vec<(OsString, OsString)> {
+        pairs
+            .iter()
+            .map(|(k, v)| (OsString::from(k), OsString::from(v)))
+            .collect()
+    }
+
+    #[test]
+    fn inside_an_appimage_the_launcher_gets_the_hosts_paths() {
+        let appimage = vars(&[
+            ("APPDIR", "/tmp/.mount_NexusX"),
+            ("LD_LIBRARY_PATH", "/tmp/.mount_NexusX/usr/lib:/usr/lib64"),
+            ("PATH", "/tmp/.mount_NexusX/usr/bin:/usr/bin:/bin"),
+            (
+                "GIO_EXTRA_MODULES",
+                "/tmp/.mount_NexusX/usr/lib/gio/modules",
+            ),
+            ("HOME", "/home/op"),
+        ]);
+        let url = "https://www.qrz.com/db/K1ABC";
+        let launchers = super::host_launchers(url, appimage).expect("an AppImage's environment");
+        let programs: Vec<&OsStr> = launchers.iter().map(|c| c.get_program()).collect();
+        assert_eq!(
+            programs,
+            super::LAUNCHERS.map(|(p, _)| OsStr::new(p)),
+            "every launcher, in order"
+        );
+        assert_eq!(
+            launchers[1].get_args().collect::<Vec<_>>(),
+            ["open", url],
+            "a launcher's own arguments, then the target"
+        );
+        for launcher in &launchers {
+            let env: HashMap<&OsStr, Option<&OsStr>> = launcher.get_envs().collect();
+            assert_eq!(
+                env[OsStr::new("LD_LIBRARY_PATH")],
+                Some(OsStr::new("/usr/lib64"))
+            );
+            assert_eq!(env[OsStr::new("PATH")], Some(OsStr::new("/usr/bin:/bin")));
+            assert_eq!(env[OsStr::new("GIO_EXTRA_MODULES")], None, "removed");
+            assert_eq!(env[OsStr::new("APPDIR")], None, "removed");
+            assert!(
+                !env.contains_key(OsStr::new("HOME")),
+                "the rest is inherited"
+            );
+        }
+    }
+
+    #[test]
+    fn outside_an_appimage_the_plugin_opens() {
+        let desktop = vars(&[("PATH", "/usr/bin:/bin"), ("HOME", "/home/op")]);
+        assert!(super::host_launchers("/home/op/Nexus", desktop).is_none());
+    }
 }
 
 /// Stamp POTA/SOTA park refs from a pota.app hunter/activator ADIF export onto
@@ -51712,11 +51931,8 @@ fn qrz_url(call: &str) -> Option<String> {
 /// logbook "who is this?" affordance).
 #[tauri::command]
 fn open_qrz_page(app: tauri::AppHandle, call: String) -> Result<(), String> {
-    use tauri_plugin_opener::OpenerExt;
     let url = qrz_url(&call).ok_or("no callsign")?;
-    app.opener()
-        .open_url(url, None::<&str>)
-        .map_err(|e| e.to_string())
+    open_on_host(&app, url)
 }
 
 /// The native title bar's theme, from the operator's theme pick: `"light"`, `"dark"`, or
@@ -51763,11 +51979,8 @@ fn dxped_page_url(call: &str, url: Option<&str>) -> Option<String> {
 /// operation" affordance.
 #[tauri::command]
 fn open_dxped_page(app: tauri::AppHandle, call: String, url: Option<String>) -> Result<(), String> {
-    use tauri_plugin_opener::OpenerExt;
     let target = dxped_page_url(&call, url.as_deref()).ok_or("no page to open")?;
-    app.opener()
-        .open_url(target, None::<&str>)
-        .map_err(|e| e.to_string())
+    open_on_host(&app, target)
 }
 
 /// Fire an OS notification (Pounce's "new one" alert). Routed through Rust — the
@@ -51811,16 +52024,13 @@ fn os_notify(app: tauri::AppHandle, title: String, body: String) -> Result<(), S
 /// hands a UI-supplied string (some of it third-party feed data) to the operator's browser.
 #[tauri::command]
 fn open_external_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
-    use tauri_plugin_opener::OpenerExt;
     let lower = url.to_ascii_lowercase();
     if !(lower.starts_with("http://") || lower.starts_with("https://"))
         || url.contains(char::is_whitespace)
     {
         return Err("not an http(s) URL".to_string());
     }
-    app.opener()
-        .open_url(url, None::<&str>)
-        .map_err(|e| e.to_string())
+    open_on_host(&app, url)
 }
 
 /// The most a QSL label sheet may be: a few thousand labels' markup, with room to spare.
@@ -51834,7 +52044,6 @@ const QSL_LABELS_MAX_BYTES: usize = 8 << 20;
 /// browser's honours the sheet's page size and zero margins.
 #[tauri::command]
 fn open_qsl_labels(app: tauri::AppHandle, html: String) -> Result<(), String> {
-    use tauri_plugin_opener::OpenerExt;
     if html.len() > QSL_LABELS_MAX_BYTES {
         return Err("the label sheet is too large to print in one go".to_string());
     }
@@ -51842,9 +52051,7 @@ fn open_qsl_labels(app: tauri::AppHandle, html: String) -> Result<(), String> {
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join("qsl-labels.html");
     std::fs::write(&path, html).map_err(|e| e.to_string())?;
-    app.opener()
-        .open_path(path.to_string_lossy().to_string(), None::<&str>)
-        .map_err(|e| e.to_string())
+    open_on_host(&app, path.to_string_lossy())
 }
 
 /// The quit cleanup ran — however many exit events arrive, it runs ONCE.
@@ -55770,12 +55977,7 @@ fn remote_service_for(
         // sign-in does on the operator's computer.
         {
             let app = handle.clone();
-            Arc::new(move |url: &str| {
-                use tauri_plugin_opener::OpenerExt;
-                app.opener()
-                    .open_url(url, None::<&str>)
-                    .map_err(|e| e.to_string())
-            })
+            Arc::new(move |url: &str| open_on_host(&app, url))
         },
     )
 }
